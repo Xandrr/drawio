@@ -174,7 +174,7 @@
 	/**
 	 * Disables the export URL function.
 	 */
-	Editor.enableExportUrl = true;
+	Editor.enableExportUrl = false;
 
 	/**
 	 * Disables fast real time collaboration while keeping slower real time collaboration enabled.
