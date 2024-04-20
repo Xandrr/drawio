@@ -12,6 +12,7 @@ EditorUi = function(editor, container, lightbox)
 	this.editor = editor || new Editor();
 	this.container = container || document.body;
 	
+	var ui = this;
 	var graph = this.editor.graph;
 	graph.lightbox = lightbox;
 
@@ -76,9 +77,33 @@ EditorUi = function(editor, container, lightbox)
 	{
 		this.footerHeight = 0;
 		graph.isEnabled = function() { return false; };
+
+		// Enables text selection in lightbox
 		graph.panningHandler.isForcePanningEvent = function(me)
 		{
+			var source = me.getSource();
+
+			while (source != null && source != graph.container)
+			{
+				if (source.nodeName === 'foreignObject' ||
+					source.nodeName === 'text')
+				{
+					return false;
+				}
+
+				source = source.parentNode;
+			}
+
 			return !mxEvent.isPopupTrigger(me.getEvent());
+		};
+
+		// Clears selection on start panning
+		var panningHandlerStart = graph.panningHandler.start;
+
+		graph.panningHandler.start = function()
+		{
+			panningHandlerStart.apply(this, arguments);
+			mxUtils.clearSelection();
 		};
 	}
 	
@@ -88,18 +113,6 @@ EditorUi = function(editor, container, lightbox)
 	
 	if (!graph.standalone)
 	{
-		// Stores the current style and assigns it to new cells
-		var styles = ['rounded', 'shadow', 'glass', 'dashed', 'dashPattern', 'labelBackgroundColor',
-			'labelBorderColor', 'comic', 'sketch', 'fillWeight', 'hachureGap', 'hachureAngle', 'jiggle',
-			'disableMultiStroke', 'disableMultiStrokeFill', 'fillStyle', 'curveFitting',
-			'simplification', 'sketchStyle', 'pointerEvents', 'strokeColor', 'strokeWidth'];
-		var connectStyles = ['shape', 'edgeStyle', 'curved', 'rounded', 'elbow', 'jumpStyle', 'jumpSize',
-			'comic', 'sketch', 'fillWeight', 'hachureGap', 'hachureAngle', 'jiggle',
-			'disableMultiStroke', 'disableMultiStrokeFill', 'fillStyle', 'curveFitting',
-			'simplification', 'sketchStyle'];
-		// Styles to be ignored if applyAll is false
-		var ignoredEdgeStyles = ['curved', 'sourcePerimeterSpacing', 'targetPerimeterSpacing',
-			'startArrow', 'startFill', 'startSize', 'endArrow', 'endFill', 'endSize'];
 		var vertexStyleIgnored = false;
 		var edgeStyleIgnored = false;
 		
@@ -110,6 +123,7 @@ EditorUi = function(editor, container, lightbox)
 			{
 				if (graph.getModel().isEdge(cell))
 				{
+					graph.pasteEdgeStyle = false;
 					edgeStyleIgnored = false;
 				}
 				else
@@ -139,12 +153,14 @@ EditorUi = function(editor, container, lightbox)
 	
 				this.fireEvent(new mxEventObject('styleChanged',
 					'keys', keys, 'values', values,
-					'cells', [cell]));
+					'cells', [cell], 'force', true));
 				
 				// Blocks update of default style with style changes
-				// once the it was set using this function
+				// and allows change of edge style if default style
+				// was changed using this function via app UI
 				if (graph.getModel().isEdge(cell))
 				{
+					graph.pasteEdgeStyle = true;
 					edgeStyleIgnored = true;
 				}
 				else
@@ -162,180 +178,23 @@ EditorUi = function(editor, container, lightbox)
 		{
 			graph.currentEdgeStyle = mxUtils.clone(graph.defaultEdgeStyle);
 			graph.currentVertexStyle = mxUtils.clone(graph.defaultVertexStyle);
+			graph.pasteEdgeStyle = false;
 			edgeStyleIgnored = false;
 			vertexStyleIgnored = false;
 			
 			// Updates UI
 			this.fireEvent(new mxEventObject('styleChanged', 'keys', [], 'values', [], 'cells', []));
 		};
-	
-		// Keys that should be ignored if the cell has a value (known: new default for all cells is html=1 so
-	    // for the html key this effecticely only works for edges inserted via the connection handler)
-		var valueStyles = ['fontFamily', 'fontSource', 'fontSize', 'fontColor'];
-				
-		for (var i = 0; i < valueStyles.length; i++)
-		{
-			if (mxUtils.indexOf(styles, valueStyles[i]) < 0)
-			{
-				styles.push(valueStyles[i]);
-			}
-		}
 		
-		// Keys that always update the current edge style regardless of selection
-		var alwaysEdgeStyles = ['edgeStyle', 'startArrow', 'startFill', 'startSize', 'endArrow',
-			'endFill', 'endSize'];
-		
-		// Keys that are ignored together (if one appears all are ignored)
-		var keyGroups = [['startArrow', 'startFill', 'endArrow', 'endFill'],
-						['startSize', 'endSize'],
-						['sourcePerimeterSpacing', 'targetPerimeterSpacing'],
-						['fillColor', 'gradientColor', 'gradientDirection'],
-						['opacity'],
-						['html']];
-		
-		// Adds all keys used above to the styles array
-		for (var i = 0; i < keyGroups.length; i++)
-		{
-			for (var j = 0; j < keyGroups[i].length; j++)
-			{
-				styles.push(keyGroups[i][j]);
-			}
-		}
-		
-		for (var i = 0; i < connectStyles.length; i++)
-		{
-			if (mxUtils.indexOf(styles, connectStyles[i]) < 0)
-			{
-				styles.push(connectStyles[i]);
-			}
-		}
-		
-		// Implements a global current style for edges and vertices that is applied to new cells
-		var insertHandler = function(cells, asText, model, vertexStyle, edgeStyle, applyAll, recurse)
-		{
-			vertexStyle = (vertexStyle != null) ? vertexStyle : graph.currentVertexStyle;
-			edgeStyle = (edgeStyle != null) ? edgeStyle : graph.currentEdgeStyle;
-			applyAll = (applyAll != null) ? applyAll : true;
-			
-			model = (model != null) ? model : graph.getModel();
-			
-			if (recurse)
-			{
-				var temp = [];
-				
-				for (var i = 0; i < cells.length; i++)
-				{
-					temp = temp.concat(model.getDescendants(cells[i]));
-				}
-				
-				cells = temp;				
-			}
-			
-			model.beginUpdate();
-			try
-			{
-				for (var i = 0; i < cells.length; i++)
-				{
-					var cell = cells[i];
-					var appliedStyles;
-
-					if (asText)
-					{
-						// Applies only basic text styles
-						appliedStyles = ['fontSize', 'fontFamily', 'fontColor'];
-					}
-					else
-					{
-						// Removes styles defined in the cell style from the styles to be applied
-						var cellStyle = model.getStyle(cell);
-						var tokens = (cellStyle != null) ? cellStyle.split(';') : [];
-						appliedStyles = styles.slice();
-						
-						for (var j = 0; j < tokens.length; j++)
-						{
-							var tmp = tokens[j];
-					 		var pos = tmp.indexOf('=');
-					 					 		
-					 		if (pos >= 0)
-					 		{
-					 			var key = tmp.substring(0, pos);
-					 			var index = mxUtils.indexOf(appliedStyles, key);
-					 			
-					 			if (index >= 0)
-					 			{
-					 				appliedStyles.splice(index, 1);
-					 			}
-					 			
-					 			// Handles special cases where one defined style ignores other styles
-					 			for (var k = 0; k < keyGroups.length; k++)
-					 			{
-					 				var group = keyGroups[k];
-					 				
-					 				if (mxUtils.indexOf(group, key) >= 0)
-					 				{
-					 					for (var l = 0; l < group.length; l++)
-					 					{
-								 			var index2 = mxUtils.indexOf(appliedStyles, group[l]);
-								 			
-								 			if (index2 >= 0)
-								 			{
-								 				appliedStyles.splice(index2, 1);
-								 			}
-					 					}
-					 				}
-					 			}
-					 		}
-						}
-					}
-					
-					// Applies the current style to the cell
-					var edge = model.isEdge(cell);
-					var current = (edge) ? edgeStyle : vertexStyle;
-					var newStyle = model.getStyle(cell);
-
-					for (var j = 0; j < appliedStyles.length; j++)
-					{
-						var key = appliedStyles[j];
-						var styleValue = current[key];
-	
-						if (styleValue != null && key != 'edgeStyle' && (key != 'shape' || edge))
-						{
-							// Special case: Connect styles are not applied here but in the connection handler
-							if (!edge || applyAll || mxUtils.indexOf(ignoredEdgeStyles, key) < 0)
-							{
-								newStyle = mxUtils.setStyle(newStyle, key, styleValue);
-							}
-						}
-					}
-
-					if (Editor.simpleLabels)
-					{
-						newStyle = mxUtils.setStyle(mxUtils.setStyle(
-							newStyle, 'html', null), 'whiteSpace', null);
-					}
-					
-					model.setStyle(cell, newStyle);
-				}
-			}
-			finally
-			{
-				model.endUpdate();
-			}
-
-			return cells;
-		};
-	
 		graph.addListener('cellsInserted', function(sender, evt)
 		{
-			insertHandler(evt.getProperty('cells'), null, null, null, null, true, true);
+			graph.pasteCellStyles(graph.includeDescendants(evt.getProperty('cells')));
 		});
 		
 		graph.addListener('textInserted', function(sender, evt)
 		{
-			insertHandler(evt.getProperty('cells'), true);
+			graph.pasteCellStyles(evt.getProperty('cells'));
 		});
-		
-		this.insertHandler = insertHandler;
 		
 		this.createDivs();
 		this.createUi();
@@ -351,9 +210,10 @@ EditorUi = function(editor, container, lightbox)
 			
 			return graph.isEditing() || (evt != null && this.isSelectionAllowed(evt));
 		});
-	
+		
 		// Disables text selection while not editing and no dialog visible
-		if (this.container == document.body)
+		if (this.container == document.body && (!this.editor.chromeless ||
+			this.editor.editable))
 		{
 			this.menubarContainer.onselectstart = textEditing;
 			this.menubarContainer.onmousedown = textEditing;
@@ -374,17 +234,46 @@ EditorUi = function(editor, container, lightbox)
 				this.tabContainer.onselectstart = textEditing;
 			}
 
+			// Workaround for rubberband selection on iPadOS 16
+			// Avoid on previous versions to allow label editing
 			if (mxClient.IS_IOS)
 			{
-				mxUtils.setPrefixedStyle(this.menubarContainer.style, 'userSelect', 'none');
-				mxUtils.setPrefixedStyle(this.diagramContainer.style, 'userSelect', 'none');
-				mxUtils.setPrefixedStyle(this.sidebarContainer.style, 'userSelect', 'none');
-				mxUtils.setPrefixedStyle(this.formatContainer.style, 'userSelect', 'none');
-				mxUtils.setPrefixedStyle(this.footerContainer.style, 'userSelect', 'none');
-
-				if (this.tabContainer != null)
+				function iOSversion()
 				{
-					mxUtils.setPrefixedStyle(this.tabContainer.style, 'userSelect', 'none');
+					var result = null;
+
+					if (/iP(hone|od|ad)/.test(navigator.platform))
+					{
+						// supports iOS 2.0 and later: <http://bit.ly/TJjs1V>
+						var v = (navigator.appVersion).match(/OS (\d+)_(\d+)_?(\d+)?/);
+
+						try
+						{
+							result = [parseInt(v[1], 10), parseInt(v[2], 10), parseInt(v[3] || 0, 10)];
+						}
+						catch (e)
+						{
+							// ignore
+						}
+					}
+
+					return result;
+				};
+				
+				var ver = iOSversion();
+				
+				if (ver != null && ver[0] >= 16)
+				{
+					mxUtils.setPrefixedStyle(this.menubarContainer.style, 'userSelect', 'none');
+					mxUtils.setPrefixedStyle(this.diagramContainer.style, 'userSelect', 'none');
+					mxUtils.setPrefixedStyle(this.sidebarContainer.style, 'userSelect', 'none');
+					mxUtils.setPrefixedStyle(this.formatContainer.style, 'userSelect', 'none');
+					mxUtils.setPrefixedStyle(this.footerContainer.style, 'userSelect', 'none');
+
+					if (this.tabContainer != null)
+					{
+						mxUtils.setPrefixedStyle(this.tabContainer.style, 'userSelect', 'none');
+					}
 				}
 			}
 		}
@@ -433,7 +322,7 @@ EditorUi = function(editor, container, lightbox)
 	
 		// Contains the main graph instance inside the given panel
 		graph.init(this.diagramContainer);
-	
+		
 	    // Improves line wrapping for in-place editor
 	    if (mxClient.IS_SVG && graph.view.getDrawPane() != null)
 	    {
@@ -479,23 +368,24 @@ EditorUi = function(editor, container, lightbox)
 				this.diagramContainer.removeAttribute('title');
 			}
 		}));
-	
-	   	// Escape key hides dialogs, adds space+drag panning
-		var spaceKeyPressed = false;
 		
 		// Overrides hovericons to disable while space key is pressed
 		var hoverIconsIsResetEvent = this.hoverIcons.isResetEvent;
 		
 		this.hoverIcons.isResetEvent = function(evt, allowShift)
 		{
-			return spaceKeyPressed || hoverIconsIsResetEvent.apply(this, arguments);
+			return ui.isSpaceDown() || hoverIconsIsResetEvent.apply(this, arguments);
 		};
 		
 		this.keydownHandler = mxUtils.bind(this, function(evt)
 		{
-			if (evt.which == 32 /* Space */ && !graph.isEditing())
+			if (evt.which == 16 /* Shift */)
 			{
-				spaceKeyPressed = true;
+				this.shiftDown = true;
+			}
+			else if (evt.which == 32 /* Space */ && !graph.isEditing())
+			{
+				this.spaceDown = true;
 				this.hoverIcons.reset();
 				graph.container.style.cursor = 'move';
 				
@@ -516,7 +406,8 @@ EditorUi = function(editor, container, lightbox)
 		this.keyupHandler = mxUtils.bind(this, function(evt)
 		{
 			graph.container.style.cursor = '';
-			spaceKeyPressed = false;
+			this.spaceDown = false;
+			this.shiftDown = false;
 		});
 	
 		mxEvent.addListener(document, 'keyup', this.keyupHandler);
@@ -527,7 +418,7 @@ EditorUi = function(editor, container, lightbox)
 		{
 			// Ctrl+left button is reported as right button in FF on Mac
 			return panningHandlerIsForcePanningEvent.apply(this, arguments) ||
-				spaceKeyPressed || (mxEvent.isMouseEvent(me.getEvent()) &&
+				ui.isSpaceDown() || (mxEvent.isMouseEvent(me.getEvent()) &&
 				(this.usePopupTrigger || !mxEvent.isPopupTrigger(me.getEvent())) &&
 				((!mxEvent.isControlDown(me.getEvent()) &&
 				mxEvent.isRightMouseButton(me.getEvent())) ||
@@ -550,7 +441,7 @@ EditorUi = function(editor, container, lightbox)
 		
 		graph.isZoomWheelEvent = function()
 		{
-			return spaceKeyPressed || graphIsZoomWheelEvent.apply(this, arguments);
+			return ui.isSpaceDown() || graphIsZoomWheelEvent.apply(this, arguments);
 		};
 		
 		// Switches toolbar for text editing
@@ -605,8 +496,6 @@ EditorUi = function(editor, container, lightbox)
 				nodes = newNodes;
 			}
 		});
-	
-		var ui = this;
 		
 		// Overrides cell editor to update toolbar
 		var cellEditorStartEditing = graph.cellEditor.startEditing;
@@ -689,13 +578,34 @@ EditorUi = function(editor, container, lightbox)
 	   	var graphFireMouseEvent = graph.fireMouseEvent;
 	   	graph.fireMouseEvent = function(evtName, me, sender)
 	   	{
-	   		if (evtName == mxEvent.MOUSE_DOWN)
-	   		{
-	   			this.container.focus();
-	   		}
-	   		
-	   		graphFireMouseEvent.apply(this, arguments);
+			try
+			{
+				if (evtName == mxEvent.MOUSE_DOWN)
+				{
+					this.container.focus();
+				}
+				
+				graphFireMouseEvent.apply(this, arguments);
+			}
+			catch (e)
+			{
+				ui.handleError(e);
+			}
 	   	};
+
+		// Adds error handling for foldCells
+		var graphFoldCells = graph.foldCells;
+		graph.foldCells = function(collapse, recurse, cells, checkFoldable, evt)
+		{
+			try
+			{
+				graphFoldCells.apply(this, arguments);
+			}
+			catch (e)
+			{
+				ui.handleError(e);
+			}
+		};
 	
 	   	// Configures automatic expand on mouseover
 		graph.popupMenuHandler.autoExpand = true;
@@ -741,102 +651,20 @@ EditorUi = function(editor, container, lightbox)
 				}, 0);
 			}
 			
-			insertHandler(cells);
+			graph.pasteCellStyles(cells);
 		});
 
 		this.addListener('styleChanged', mxUtils.bind(this, function(sender, evt)
 		{
+			var force = evt.getProperty('force');
+			
 			// Checks if edges and/or vertices were modified
-			var cells = evt.getProperty('cells');
-			var vertex = false;
-			var edge = false;
-			
-			if (cells.length > 0)
+			if (this.updateDefaultStyle || force)
 			{
-				for (var i = 0; i < cells.length; i++)
-				{
-					vertex = graph.getModel().isVertex(cells[i]) || vertex;
-					edge = graph.getModel().isEdge(cells[i]) || edge;
-					
-					if (edge && vertex)
-					{
-						break;
-					}
-				}
-			}
-			else
-			{
-				vertex = true;
-				edge = true;
-			}
-
-			vertex = vertex && !vertexStyleIgnored;
-			edge = edge && !edgeStyleIgnored;
-			
-			var keys = evt.getProperty('keys');
-			var values = evt.getProperty('values');
-	
-			for (var i = 0; i < keys.length; i++)
-			{
-				var common = mxUtils.indexOf(valueStyles, keys[i]) >= 0;
-
-				// Ignores transparent stroke colors
-				if (keys[i] != 'strokeColor' || (values[i] != null && values[i] != 'none'))
-				{
-					// Special case: Edge style and shape
-					if (mxUtils.indexOf(connectStyles, keys[i]) >= 0)
-					{
-						if (edge || mxUtils.indexOf(alwaysEdgeStyles, keys[i]) >= 0)
-						{
-							if (values[i] == null)
-							{
-								delete graph.currentEdgeStyle[keys[i]];
-							}
-							else
-							{
-								graph.currentEdgeStyle[keys[i]] = values[i];
-							}
-						}
-						// Uses style for vertex if defined in styles
-						else if (vertex && mxUtils.indexOf(styles, keys[i]) >= 0)
-						{
-							if (values[i] == null)
-							{
-								delete graph.currentVertexStyle[keys[i]];
-							}
-							else
-							{
-								graph.currentVertexStyle[keys[i]] = values[i];
-							}
-						}
-					}
-					else if (mxUtils.indexOf(styles, keys[i]) >= 0)
-					{
-						if (vertex || common)
-						{
-							if (values[i] == null)
-							{
-								delete graph.currentVertexStyle[keys[i]];
-							}
-							else
-							{
-								graph.currentVertexStyle[keys[i]] = values[i];
-							}
-						}
-						
-						if (edge || common || mxUtils.indexOf(alwaysEdgeStyles, keys[i]) >= 0)
-						{
-							if (values[i] == null)
-							{
-								delete graph.currentEdgeStyle[keys[i]];
-							}
-							else
-							{
-								graph.currentEdgeStyle[keys[i]] = values[i];
-							}
-						}
-					}
-				}
+				graph.copyCellStyles(evt.getProperty('cells'),
+					evt.getProperty('keys'), evt.getProperty('values'),
+					graph.currentVertexStyle, graph.currentEdgeStyle,
+					vertexStyleIgnored, edgeStyleIgnored);
 			}
 
 			if (this.toolbar != null)
@@ -945,6 +773,23 @@ EditorUi = function(editor, container, lightbox)
 			}
 		});
 		
+		// Selects parent layer for current selection
+		if (Graph.selectParentLayer)
+		{
+			graph.selectionModel.addListener(mxEvent.CHANGE, function()
+			{
+				if (graph.isEnabled() && !graph.isSelectionEmpty())
+				{
+					var layer = graph.getLayerForCells(graph.getSelectionCells());
+
+					if (layer != null)
+					{
+						graph.setDefaultParent(layer);
+					}
+				}
+			});
+		}
+
 		// Global handler to hide the current menu
 		this.gestureHandler = mxUtils.bind(this, function(evt)
 		{
@@ -958,10 +803,20 @@ EditorUi = function(editor, container, lightbox)
 	
 		// Updates the editor UI after the window has been resized or the orientation changes
 		// Timeout is workaround for old IE versions which have a delay for DOM client sizes.
-		// Should not use delay > 0 to avoid handle multiple repaints during window resize
+		var resizeThread = null;
+
 		this.resizeHandler = mxUtils.bind(this, function()
 	   	{
-			this.windowResized();
+			if (resizeThread != null)
+			{
+				window.clearTimeout(resizeThread);
+			}
+
+			resizeThread = window.setTimeout(mxUtils.bind(this, function()
+			{
+				resizeThread = null;
+				this.windowResized();
+			}), 100);
 	   	});
 		
 	   	mxEvent.addListener(window, 'resize', this.resizeHandler);
@@ -1142,10 +997,16 @@ EditorUi.prototype.toolbarHeight = 38;
 EditorUi.prototype.footerHeight = 28;
 
 /**
- * Specifies the position of the horizontal split bar. Default is 240 or 118 for
- * screen widths <= 640px.
+ * Specifies the default sidebar width.
  */
-EditorUi.prototype.hsplitPosition = (screen.width <= 640) ? 118 : ((urlParams['sidebar-entries'] != 'large') ? 212 : 240);
+EditorUi.prototype.defaultSidebarWidth = Math.min(screen.width / 2,
+	(urlParams['sidebar-entries'] != 'large') ? 212 : 240);
+
+/**
+ * Specifies the position of the horizontal split bar.
+ */
+EditorUi.prototype.hsplitPosition = (screen.width <= Editor.smallScreenWidth) ? 0 :
+	EditorUi.prototype.defaultSidebarWidth;
 
 /**
  * Specifies if animations are allowed in <executeLayout>. Default is true.
@@ -1166,6 +1027,21 @@ EditorUi.prototype.lightboxVerticalDivider = 4;
  * Specifies if single click on horizontal split should collapse sidebar. Default is false.
  */
 EditorUi.prototype.hsplitClickEnabled = false;
+
+/**
+ * Whether the default styles should be updated when styles are changed. Default is true.
+ */
+EditorUi.prototype.updateDefaultStyle = false;
+
+/**
+ * Whether the default styles should be updated when styles are changed. Default is true.
+ */
+EditorUi.prototype.spaceDown = false;
+
+/**
+ * Whether the default styles should be updated when styles are changed. Default is true.
+ */
+EditorUi.prototype.shiftDown = false;
 
 /**
  * Installs the listeners to update the action states.
@@ -1238,7 +1114,8 @@ EditorUi.prototype.init = function()
 			ui.updateActionStates();
 		};
 		
-		// Hack to make editLink available in vertex handler
+		// Hack to make showLinkDialog and editLink available in vertex handler
+		graph.showLinkDialog = mxUtils.bind(ui, ui.showLinkDialog);
 		graph.editLink = ui.actions.get('editLink').funct;
 		
 		this.updateActionStates();
@@ -1305,8 +1182,8 @@ EditorUi.prototype.createSelectionState = function()
 EditorUi.prototype.initSelectionState = function()
 {
 	return {vertices: [], edges: [], cells: [], x: null, y: null, width: null, height: null,
-		style: {}, containsImage: false, containsLabel: false, fill: true, glass: true,
-		rounded: true, autoSize: false, image: true, shadow: true, lineJumps: true, resizable: true,
+		style: {}, containsImage: false, containsLabel: false, fill: true, glass: true, html: true,
+		rounded: true, autoSize: false, image: false, shadow: true, lineJumps: true, resizable: true,
 		table: false, cell: false, row: false, movable: true, rotatable: true, stroke: true,
 		swimlane: false, unlocked: this.editor.graph.isEnabled(), connections: false};
 };
@@ -1388,6 +1265,152 @@ EditorUi.prototype.windowResized = function()
 			this.refresh();
 		}
 	}), 0);
+};
+
+/**
+ * Returns information about the current selection.
+ */
+EditorUi.prototype.createTimeout = function(timeout, fn, error)
+{
+	var acceptResponse = true;
+	var result = null;
+
+	var handleError = mxUtils.bind(this, function(e)
+	{
+		if (result.clear())
+		{
+			acceptResponse = false;
+			e = (e != null) ? e : {code: App.ERROR_TIMEOUT,
+				message: mxResources.get('timeout'),
+				retry: mxUtils.bind(this, function()
+				{
+					this.createTimeout(timeout, fn, error);
+				})};
+
+			if (error != null)
+			{
+				error(e);
+			}
+			else
+			{
+				this.handleError(e);
+			}
+		}
+	});
+	
+	var timeoutThread = window.setTimeout(handleError,
+		(timeout != null) ? timeout : this.timeout);
+
+	var result = {
+		clear: function()
+		{
+			window.clearTimeout(timeoutThread);
+
+			return acceptResponse;
+		},
+		isAlive: function()
+		{
+			return acceptResponse;
+		}
+	};
+
+	if (fn != null)
+	{
+		this.tryAndHandle(mxUtils.bind(this, function()
+		{
+			fn(result);
+		}), handleError);
+	}
+
+	return result;
+};
+
+/**
+ * Returns information about the current selection.
+ */
+EditorUi.prototype.tryAndHandle = function(fn, error)
+{
+	try
+	{
+		fn();
+	}
+	catch (e)
+	{
+		if (error != null)
+		{
+			error(e);
+		}
+		else
+		{
+			this.handleError(e);
+		}
+	}
+};
+
+/**
+ * Returns information about the current selection.
+ */
+EditorUi.prototype.convertDarkModeColors = function(cells, keys)
+{
+	var graph = this.editor.graph;
+	cells = (cells != null) ? cells : graph.getSelectionCells();
+	keys = (keys != null) ? keys : [mxConstants.STYLE_FONTCOLOR,
+		mxConstants.STYLE_FILLCOLOR, mxConstants.STYLE_GRADIENTCOLOR,
+		mxConstants.STYLE_STROKECOLOR, mxConstants.STYLE_IMAGE_BORDER,
+		mxConstants.STYLE_IMAGE_BACKGROUND, mxConstants.STYLE_LABEL_BORDERCOLOR,
+		mxConstants.STYLE_SWIMLANE_FILLCOLOR, mxConstants.STYLE_LABEL_BACKGROUNDCOLOR];
+	
+	var colorCache = {};
+	var canvas = document.createElement('canvas');
+	canvas.width = 1;
+	canvas.height = 1;
+
+	var ctx = canvas.getContext('2d', {willReadFrequently: true});
+	ctx.filter = 'invert(100%) hue-rotate(180deg)';
+	
+	graph.model.beginUpdate();
+	try
+	{
+		for (var i = 0; i < cells.length; i++)
+		{
+			if (graph.model.isEdge(cells[i]) || graph.model.isVertex(cells[i]))
+			{
+				var style = graph.getCurrentCellStyle(cells[i]);
+
+				if (style != null)
+				{
+					for (var j = 0; j < keys.length; j++)
+					{
+						try
+						{
+							var value = style[keys[j]];
+
+							if (value != null && value.charAt(0) == '#')
+							{
+								var result = colorCache[value];
+
+								if (result == null)
+								{
+									result = Graph.invertColor(value, ctx);
+									colorCache[value] = result;
+								}
+
+								graph.setCellStyles(keys[j], result, [cells[i]]);
+							}
+						}
+						catch (e)
+						{
+							// ignore
+						}
+					}
+				}
+			}
+		}
+	}
+	finally
+	{
+		graph.model.endUpdate();
+	}
 };
 
 /**
@@ -1485,13 +1508,15 @@ EditorUi.prototype.updateSelectionStateForCell = function(result, cell, cells, i
 	
 	if (state != null)
 	{
+		result.html = result.html && graph.isHtmlLabel(cell);
 		result.autoSize = result.autoSize || graph.isAutoSizeState(state);
 		result.glass = result.glass && graph.isGlassState(state);
 		result.rounded = result.rounded && graph.isRoundedState(state);
 		result.lineJumps = result.lineJumps && graph.isLineJumpState(state);
-		result.image = result.image && graph.isImageState(state);
+		result.image = result.image || graph.isImageState(state);
 		result.shadow = result.shadow && graph.isShadowState(state);
 		result.fill = result.fill && graph.isFillState(state);
+		result.gradient = result.fill && graph.isGradientState(state);
 		result.stroke = result.stroke && graph.isStrokeState(state);
 		
 		var shape = mxUtils.getValue(state.style, mxConstants.STYLE_SHAPE, null);
@@ -1533,7 +1558,8 @@ EditorUi.prototype.installShapePicker = function()
 	 
 	graph.popupMenuHandler.isMenuShowing = function()
 	{
-		return popupMenuHandlerIsMenuShowing.apply(this, arguments) || ui.shapePicker != null;
+		return popupMenuHandlerIsMenuShowing.apply(this, arguments) ||
+			ui.shapePicker != null || ui.currentMenu != null;
 	};
 	
 	// Adds dbl click dialog for inserting shapes
@@ -1724,12 +1750,16 @@ EditorUi.prototype.centerShapePicker = function(div, rect, x, y, dir)
 /**
  * Creates a temporary graph instance for rendering off-screen content.
  */
-EditorUi.prototype.showShapePicker = function(x, y, source, callback, direction, hovering, getInsertLocationFn)
+EditorUi.prototype.showShapePicker = function(x, y, source, callback, direction, hovering,
+	getInsertLocationFn, showEdges, startEditing)
 {
+	showEdges = showEdges || source == null;
+
 	var div = this.createShapePicker(x, y, source, callback, direction, mxUtils.bind(this, function()
 	{	
 		this.hideShapePicker();
-	}), this.getCellsForShapePicker(source, hovering), hovering, getInsertLocationFn);
+	}), this.getCellsForShapePicker(source, hovering, showEdges), hovering,
+		getInsertLocationFn, showEdges, startEditing);
 	
 	if (div != null)
 	{
@@ -1754,8 +1784,10 @@ EditorUi.prototype.showShapePicker = function(x, y, source, callback, direction,
 /**
  * Creates a temporary graph instance for rendering off-screen content.
  */
-EditorUi.prototype.createShapePicker = function(x, y, source, callback, direction, afterClick, cells, hovering, getInsertLocationFn)
+EditorUi.prototype.createShapePicker = function(x, y, source, callback, direction,
+	afterClick, cells, hovering, getInsertLocationFn, showEdges, startEditing)
 {
+	startEditing = (startEditing != null) ? startEditing : true;
 	var graph = this.editor.graph;
 	var div = null;
 
@@ -1764,11 +1796,18 @@ EditorUi.prototype.createShapePicker = function(x, y, source, callback, directio
 		var cell = cells[0];
 		var w = 0;
 		var h = 0;
+		var geo = cell.geometry;
 
-		if (cell.geometry != null)
-		{
-			w = cell.geometry.width / 2;
-			h = cell.geometry.height / 2;
+		if (geo != null)
+		{	
+			if (graph.model.isEdge(cell))
+			{
+				var pt = geo.getTerminalPoint(false);
+				geo = new mxRectangle(0, 0, pt.x, pt.y);
+			}
+
+			w = geo.width / 2;
+			h = geo.height / 2;
 		}
 
 		return new mxPoint(graph.snap(Math.round(x / graph.view.scale) - graph.view.translate.x - w),
@@ -1787,11 +1826,17 @@ EditorUi.prototype.createShapePicker = function(x, y, source, callback, directio
 		
 		// Do not place entry under pointer for touch devices
 		var w = (cells.length < 6) ? cells.length * 35 : 140;
-		div.className = 'geToolbarContainer geSidebarContainer';
-		div.style.cssText = 'position:absolute;left:' + x + 'px;top:' + y +
-			'px;width:' + w + 'px;border-radius:10px;padding:4px;text-align:center;' +
-			'box-shadow:0px 0px 3px 1px #d1d1d1;padding: 6px 0 8px 0;' +
-			'z-index: ' + mxPopupMenu.prototype.zIndex + 1 + ';';
+		div.className = 'geToolbarContainer geSidebarContainer geShapePicker';
+		div.setAttribute('title', mxResources.get('sidebarTooltip'));
+		div.style.left = x + 'px';
+		div.style.top = y + 'px';
+		div.style.width = w + 'px';
+
+		// Disables built-in pan and zoom on touch devices
+		if (mxClient.IS_POINTER)
+		{
+			div.style.touchAction = 'none';
+		}
 
 		if (!hovering)
 		{
@@ -1820,58 +1865,93 @@ EditorUi.prototype.createShapePicker = function(x, y, source, callback, directio
 			}
 			else
 			{
-				ui.insertHandler([cell], cell.value != '' && urlParams['sketch'] != '1', this.sidebar.graph.model);
+				this.sidebar.graph.pasteCellStyles([cell],
+					graph.currentVertexStyle,
+					graph.currentEdgeStyle);
 			}
 
-			node.appendChild(this.sidebar.createVertexTemplateFromCells([cell],
-				cell.geometry.width, cell.geometry.height, '', true, false,
-				null, false, mxUtils.bind(this, function(evt)
+			var geo = cell.geometry;
+			
+			if (graph.model.isEdge(cell))
 			{
-				var clone = graph.cloneCell(cell);
-				
-				if (callback != null)
+				var pt = geo.getTerminalPoint(false);
+				geo = new mxRectangle(0, 0, pt.x, pt.y);
+			}
+			
+			if (geo != null)
+			{
+				node.appendChild(this.sidebar.createVertexTemplateFromCells([cell],
+					geo.width, geo.height, '', true, false, null, false,
+					mxUtils.bind(this, function(evt)
 				{
-					callback(clone);
-				}
-				else
-				{
-					var pt = getInsertLocationFn([clone]);
-					clone.geometry.x = pt.x;
-					clone.geometry.y = pt.y;
-					
-					graph.model.beginUpdate();
-					try
+					if (mxEvent.isShiftDown(evt) && (source != null ||
+						!graph.isSelectionEmpty()))
 					{
-						graph.addCell(clone);
+						var temp = graph.getEditableCells((source != null) ?
+							[source] : graph.getSelectionCells());
+						graph.updateShapes(cell, temp);
+					}
+					else
+					{
+						var clone = graph.cloneCell(cell);
 
-						if (graph.model.isVertex(clone) &&
-							graph.isAutoSizeCell(clone))
+						if (callback != null)
 						{
-							graph.updateCellSize(clone);
+							callback(clone);
+						}
+						else
+						{
+							var pt = getInsertLocationFn([clone]);
+
+							if (graph.model.isEdge(clone))
+							{
+								clone.geometry.translate(pt.x, pt.y);
+							}
+							else
+							{
+								clone.geometry.x = pt.x;
+								clone.geometry.y = pt.y;
+							}
+							
+							graph.model.beginUpdate();
+							try
+							{
+								graph.addCell(clone);
+
+								if (graph.model.isVertex(clone) &&
+									graph.isAutoSizeCell(clone))
+								{
+									graph.updateCellSize(clone);
+								}
+							}
+							finally
+							{
+								graph.model.endUpdate();
+							}
+							
+							graph.setSelectionCell(clone);
+							graph.scrollCellToVisible(clone);
+							
+							if (startEditing)
+							{
+								graph.startEditing(clone);
+							}
+							
+							if (ui.hoverIcons != null)
+							{
+								ui.hoverIcons.update(graph.view.getState(clone));
+							}
 						}
 					}
-					finally
-					{
-						graph.model.endUpdate();
-					}
 					
-					graph.setSelectionCell(clone);
-					graph.scrollCellToVisible(clone);
-					graph.startEditingAtCell(clone);
-					
-					if (ui.hoverIcons != null)
+					if (afterClick != null)
 					{
-						ui.hoverIcons.update(graph.view.getState(clone));
+						afterClick(evt);
 					}
-				}
-				
-				if (afterClick != null)
-				{
-					afterClick();
-				}
 
-				mxEvent.consume(evt);
-			}), 25, 25));
+					mxEvent.consume(evt);
+				}), 25, 25, null, null, source));
+			}
 		});
 		
 		for (var i = 0; i < (hovering ? Math.min(cells.length, 4) : cells.length); i++)
@@ -1902,17 +1982,61 @@ EditorUi.prototype.createShapePicker = function(x, y, source, callback, directio
 /**
  * Creates a temporary graph instance for rendering off-screen content.
  */
-EditorUi.prototype.getCellsForShapePicker = function(cell, hovering)
+EditorUi.prototype.getCellsForShapePicker = function(cell, hovering, showEdges)
 {
+	var graph = this.editor.graph;
+
 	var createVertex = mxUtils.bind(this, function(style, w, h, value)
 	{
-		return this.editor.graph.createVertex(null, null, value || '', 0, 0, w || 120, h || 60, style, false);
+		return graph.createVertex(null, null, value || '', 0, 0, w || 120, h || 60, style, false);
 	});
+
+	var createEdge = mxUtils.bind(this, function(style, y, value)
+	{
+		var cell = new mxCell(value || '', new mxGeometry(0, 0, graph.defaultEdgeLength + 20, 0), style);
+		cell.geometry.setTerminalPoint(new mxPoint(0, 0), true);
+		cell.geometry.setTerminalPoint(new mxPoint(cell.geometry.width, (y != null) ? y : 0), false);
+		cell.geometry.points = (y != null) ? [new mxPoint(cell.geometry.width / 2, y)] : [];
+		cell.geometry.relative = true;
+		cell.edge = true;
+
+		return cell;
+	});
+
+	// Creates a clone of the source cell and moves it to the origin
+	if (cell != null)
+	{
+		try
+		{
+			cell = graph.cloneCell(cell);
+			
+			if (graph.model.isVertex(cell) && cell.geometry != null)
+			{
+				cell.geometry.x = 0;
+				cell.geometry.y = 0;
+			}
+		}
+		catch (e)
+		{
+			cell = null;
+		}
+	}
 	
-	return [(cell != null) ? this.editor.graph.cloneCell(cell) :
-			createVertex('text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;', 40, 20, 'Text'),
-		createVertex('whiteSpace=wrap;html=1;'),
-		createVertex('ellipse;whiteSpace=wrap;html=1;'),
+	if (cell == null)
+	{
+		cell = createVertex(graph.appendFontSize('text;html=1;align=center;verticalAlign=middle;resizable=0;' +
+			'points=[];autosize=1;strokeColor=none;fillColor=none;', graph.vertexFontSize), 40, 20, 'Text');
+		
+		if (graph.model.isVertex(cell) && graph.isAutoSizeCell(cell))
+		{
+			// Uses offscreen graph to bypass undo history
+			var tempGraph = Graph.createOffscreenGraph(graph.getStylesheet());
+			tempGraph.updateCellSize(cell);
+		}
+	}
+
+	var cells = [cell, createVertex('whiteSpace=wrap;html=1;'),
+		createVertex('ellipse;whiteSpace=wrap;html=1;', 80, 80),
 		createVertex('rhombus;whiteSpace=wrap;html=1;', 80, 80),
 		createVertex('rounded=1;whiteSpace=wrap;html=1;'),
 		createVertex('shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;'),
@@ -1925,7 +2049,29 @@ EditorUi.prototype.getCellsForShapePicker = function(cell, hovering)
 		createVertex('shape=tape;whiteSpace=wrap;html=1;', 120, 100),
 		createVertex('ellipse;shape=cloud;whiteSpace=wrap;html=1;', 120, 80),
 		createVertex('shape=singleArrow;whiteSpace=wrap;html=1;arrowWidth=0.4;arrowSize=0.4;', 80, 60),
-		createVertex('shape=waypoint;sketch=0;size=6;pointerEvents=1;points=[];fillColor=none;resizable=0;rotatable=0;perimeter=centerPerimeter;snapToPoint=1;', 40, 40)];
+		createVertex('shape=waypoint;sketch=0;size=6;pointerEvents=1;points=[];fillColor=none;resizable=0;' +
+			'rotatable=0;perimeter=centerPerimeter;snapToPoint=1;', 20, 20)];
+	
+	if (showEdges)
+	{
+		cells = cells.concat([
+			createEdge('edgeStyle=none;orthogonalLoop=1;jettySize=auto;html=1;'),
+			createEdge('edgeStyle=none;orthogonalLoop=1;jettySize=auto;html=1;endArrow=classic;startArrow=classic;endSize=8;startSize=8;'),
+			createEdge('edgeStyle=none;orthogonalLoop=1;jettySize=auto;html=1;shape=flexArrow;rounded=1;startSize=8;endSize=8;'),
+			createEdge('edgeStyle=segmentEdgeStyle;endArrow=classic;html=1;curved=0;rounded=0;endSize=8;startSize=8;sourcePerimeterSpacing=0;targetPerimeterSpacing=0;',
+				this.editor.graph.defaultEdgeLength / 2)
+		]);
+	}
+
+	return cells;
+};
+
+/**
+ * Creates a temporary graph instance for rendering off-screen content.
+ */
+EditorUi.prototype.isShapePickerVisible = function(cancel)
+{
+	return this.shapePicker != null;
 };
 
 /**
@@ -1945,6 +2091,22 @@ EditorUi.prototype.hideShapePicker = function(cancel)
 		
 		this.shapePickerCallback = null;
 	}
+};
+
+/**
+ * Whether the default styles should be updated when styles are changed. Default is true.
+ */
+EditorUi.prototype.isSpaceDown = function()
+{
+	return this.spaceDown;
+};
+
+/**
+ * Whether the default styles should be updated when styles are changed. Default is true.
+ */
+EditorUi.prototype.isShiftDown = function()
+{
+	return this.shiftDown;
 };
 
 /**
@@ -2025,26 +2187,7 @@ EditorUi.prototype.onKeyPress = function(evt)
 		evt.which !== 27 && !mxEvent.isAltDown(evt) && !mxEvent.isControlDown(evt) && !mxEvent.isMetaDown(evt))
 	{
 		graph.escape();
-		graph.startEditing();
-
-		// Workaround for FF where char is lost if cursor is placed before char
-		if (mxClient.IS_FF)
-		{
-			var ce = graph.cellEditor;
-			
-			if (ce.textarea != null)
-			{
-				ce.textarea.innerHTML = String.fromCharCode(evt.which);
-	
-				// Moves cursor to end of textarea
-				var range = document.createRange();
-				range.selectNodeContents(ce.textarea);
-				range.collapse(false);
-				var sel = window.getSelection();
-				sel.removeAllRanges();
-				sel.addRange(range);
-			}
-		}
+		graph.startEditing(null, String.fromCharCode(evt.which));
 	}
 };
 
@@ -2061,9 +2204,9 @@ EditorUi.prototype.isImmediateEditingEvent = function(evt)
  */
 EditorUi.prototype.updateCssForMarker = function(markerDiv, prefix, shape, marker, fill)
 {
-	markerDiv.style.verticalAlign = 'top';
-	markerDiv.style.height = '21px';
-	markerDiv.style.width = '21px';
+	markerDiv.style.display = 'inline-flex';
+	markerDiv.style.alignItems = 'center';
+	markerDiv.style.justifyContent = 'center';
 	markerDiv.innerText = '';
 
 	if (shape == 'flexArrow')
@@ -2079,8 +2222,6 @@ EditorUi.prototype.updateCssForMarker = function(markerDiv, prefix, shape, marke
 		{
 			var img = document.createElement('img');
 			img.className = 'geAdaptiveAsset';
-			img.style.position = 'absolute';
-			img.style.marginTop = '0.5px';
 			img.setAttribute('src', src);
 			markerDiv.className = '';
 
@@ -2096,12 +2237,8 @@ EditorUi.prototype.updateCssForMarker = function(markerDiv, prefix, shape, marke
 			markerDiv.className = 'geSprite geSprite-noarrow';
 			markerDiv.innerHTML = mxUtils.htmlEntities(mxResources.get('none'));
 			markerDiv.style.backgroundImage = 'none';
-			markerDiv.style.verticalAlign = 'top';
-			markerDiv.style.marginTop = '4px';
-			markerDiv.style.fontSize = '10px';
+			markerDiv.style.fontSize = '11px';
 			markerDiv.style.filter = 'none';
-			markerDiv.style.color = this.defaultStrokeColor;
-			markerDiv.nextSibling.style.marginTop = '0px';
 		}
 	}
 };
@@ -2375,7 +2512,7 @@ EditorUi.prototype.lazyZoomDelay = 20;
 /**
  * Delay before update of DOM when using preview.
  */
-EditorUi.prototype.wheelZoomDelay = 400;
+EditorUi.prototype.wheelZoomDelay = 500;
 
 /**
  * Delay before update of DOM when using preview.
@@ -2433,7 +2570,9 @@ EditorUi.prototype.initCanvas = function()
                 cx = (cx != null) ? cx : 0;
                 cy = (cy != null) ? cy : 0;
                 
-                var bds = (graph.pageVisible) ? graph.view.getBackgroundPageBounds() : graph.getGraphBounds();
+                var bds = (graph.pageVisible) ?
+					graph.view.getBackgroundPageBounds() :
+					graph.getGraphBounds();
                 var scroll = mxUtils.hasScrollbars(graph.container);
                 var tr = graph.view.translate;
                 var s = graph.view.scale;
@@ -2622,6 +2761,7 @@ EditorUi.prototype.initCanvas = function()
 				pageInfo.style.fontWeight = 'bold';
 				pageInfo.style.marginTop = '8px';
 				pageInfo.style.fontSize = '14px';
+				pageInfo.style.cursor = 'default';
 
 				if (!mxClient.IS_IE && !mxClient.IS_IE11)
 				{
@@ -2645,7 +2785,14 @@ EditorUi.prototype.initCanvas = function()
 					if (this.pages != null && this.pages.length > 1 && this.currentPage != null)
 					{
 						pageInfo.innerText = '';
-						mxUtils.write(pageInfo, (mxUtils.indexOf(this.pages, this.currentPage) + 1) + ' / ' + this.pages.length);
+						var index = mxUtils.indexOf(this.pages, this.currentPage);
+						mxUtils.write(pageInfo, (index + 1) + ' / ' + this.pages.length);
+						pageInfo.setAttribute('title', mxResources.get('currentPage') + ': ' +
+							this.currentPage.getName());
+						prevButton.setAttribute('title', mxResources.get('previousPage') + ': ' +
+							this.pages[mxUtils.mod(index - 1, this.pages.length)].getName());
+						nextButton.setAttribute('title', mxResources.get('nextPage') + ': ' +
+							this.pages[mxUtils.mod(index + 1, this.pages.length)].getName());
 					}
 				});
 				
@@ -2671,6 +2818,38 @@ EditorUi.prototype.initCanvas = function()
 					
 					updatePageInfo();
 				});
+
+				if (this.menus != null)
+				{
+					var pagesMenu = this.menus.get('pages');
+
+					if (pagesMenu != null)
+					{
+						mxEvent.addListener(pageInfo, 'click', mxUtils.bind(this, function(evt)
+						{
+							var menu = new mxPopupMenu(pagesMenu.funct);
+							menu.div.className += ' geMenubarMenu';
+							menu.smartSeparators = true;
+							menu.showDisabled = true;
+							menu.autoExpand = true;
+							
+							// Disables autoexpand and destroys menu when hidden
+							menu.hideMenu = mxUtils.bind(this, function()
+							{
+								mxPopupMenu.prototype.hideMenu.apply(menu, arguments);
+								menu.destroy();
+							});
+			
+							var offset = mxUtils.getOffset(pageInfo);
+							menu.popup(offset.x, offset.y + pageInfo.offsetHeight, null, evt);
+
+							mxEvent.addListener(menu.div, 'mouseleave', mxUtils.bind(this, function()
+							{
+								menu.hideMenu();
+							}));
+						}));
+					}
+				}
 				
 				this.editor.addListener('resetGraphView', updatePageButtons);
 				this.editor.addListener('pageSelected', updatePageInfo);
@@ -2773,7 +2952,13 @@ EditorUi.prototype.initCanvas = function()
 					}
 					else
 					{
-						this.layersDialog = graph.createLayersDialog(null, true);
+						this.layersDialog = graph.createLayersDialog(mxUtils.bind(this, function()
+						{
+							if (this.chromelessResize)
+							{
+								this.chromelessResize();
+							}
+						}), true);
 						
 						mxEvent.addListener(this.layersDialog, 'mouseleave', mxUtils.bind(this, function()
 						{
@@ -2897,8 +3082,8 @@ EditorUi.prototype.initCanvas = function()
 				}), Editor.fullscreenImage, mxResources.get('openInNewWindow', null, 'Open in New Window'));
 			}
 			
-			if ((toolbarConfig.closeBtn && window.self === window.top) ||
-				(graph.lightbox && (urlParams['close'] == '1' || this.container != document.body)))
+			if (!toolbarConfig.noCloseBtn && ((toolbarConfig.closeBtn && window.self === window.top) ||
+				(graph.lightbox && (urlParams['close'] == '1' || this.container != document.body))))
 			{
 				addButton(mxUtils.bind(this, function(evt)
 				{
@@ -3030,22 +3215,64 @@ EditorUi.prototype.initCanvas = function()
 		/**
 		 * Guesses autoTranslate to avoid another repaint (see below).
 		 * Works if only the scale of the graph changes or if pages
-		 * are visible and the visible pages do not change.
+		 * are visible and the visible pages do not change. Uses
+		 * geometries to guess the bounding box of the graph.
 		 */
 		var graphViewValidate = graph.view.validate;
+		var zero = new mxPoint();
+		var pageChanged = false;
+		var lastPage = null;
+
 		graph.view.validate = function()
 		{
-			if (this.graph.container != null && mxUtils.hasScrollbars(this.graph.container))
+			if (graph.container != null &&
+				mxUtils.hasScrollbars(graph.container))
 			{
-				var pad = this.graph.getPagePadding();
-				var size = this.graph.getPageSize();
+				// Sets initial state after page changes
+				if (ui.currentPage != null &&
+					lastPage != ui.currentPage)
+				{
+					lastPage = ui.currentPage;
+					pageChanged = true;
+
+					// Sets initial translate based on geometries
+					// to avoid revalidation in sizeDidChange
+					var bbox = graph.getBoundingBoxFromGeometry(
+						graph.model.getCells(), true, null, true);
+					
+					// Handles blank diagrams
+					if (bbox == null)
+					{
+						bbox = new mxRectangle(
+							graph.view.translate.x * graph.view.scale,
+							graph.view.translate.y * graph.view.scale);
+					}
+
+					var pageLayout = graph.getPageLayout(bbox, zero, 1);
+					var tr = graph.getDefaultTranslate(pageLayout);
+					this.x0 = pageLayout.x;
+					this.y0 = pageLayout.y;
+					
+					if (tr.x != this.translate.x ||
+						tr.y != this.translate.y)
+					{
+						this.invalidate();
+						this.translate.x = tr.x;
+						this.translate.y = tr.y;
+					}
+				}
 				
-				// Updating scrollbars here causes flickering in quirks and is not needed
-				// if zoom method is always used to set the current scale on the graph.
-				var tx = this.translate.x;
-				var ty = this.translate.y;
-				this.translate.x = pad.x - (this.x0 || 0) * size.width;
-				this.translate.y = pad.y - (this.y0 || 0) * size.height;
+				var pad = graph.getPagePadding();
+				var size = graph.getPageSize();
+				var tx = pad.x - (this.x0 || 0) * size.width;
+				var ty = pad.y - (this.y0 || 0) * size.height;
+
+				if (this.translate.x != tx || this.translate.y != ty)
+				{
+					this.invalidate();	
+					this.translate.x = tx
+					this.translate.y = ty
+				}
 			}
 			
 			graphViewValidate.apply(this, arguments);
@@ -3054,60 +3281,52 @@ EditorUi.prototype.initCanvas = function()
 		if (!graph.isViewer())
 		{
 			var graphSizeDidChange = graph.sizeDidChange;
-			
+
 			graph.sizeDidChange = function()
 			{
-				if (this.container != null && mxUtils.hasScrollbars(this.container))
+				var skipScroll = pageChanged;
+				pageChanged = false;
+
+				if (this.container != null &&
+					mxUtils.hasScrollbars(this.container))
 				{
-					var pages = this.getPageLayout();
-					var pad = this.getPagePadding();
-					var size = this.getPageSize();
-					
-					// Updates the minimum graph size
-					var minw = Math.ceil(2 * pad.x + pages.width * size.width);
-					var minh = Math.ceil(2 * pad.y + pages.height * size.height);
-					
-					var min = graph.minimumGraphSize;
-					
-					// LATER: Fix flicker of scrollbar size in IE quirks mode
-					// after delayed call in window.resize event handler
-					if (min == null || min.width != minw || min.height != minh)
+					this.updateMinimumSize();
+
+					if (!this.autoTranslate)
 					{
-						graph.minimumGraphSize = new mxRectangle(0, 0, minw, minh);
+						var pageLayout = this.getPageLayout();
+						var tr = this.getDefaultTranslate(pageLayout);
+						var tx = this.view.translate.x;
+						var ty = this.view.translate.y;
+						
+						if (tr.x != tx || tr.y != ty)
+						{
+							this.view.x0 = pageLayout.x;
+							this.view.y0 = pageLayout.y;
+
+							// Requires full revalidation
+							this.autoTranslate = true;
+							this.view.setTranslate(tr.x, tr.y);
+							this.autoTranslate = false;
+
+							// Skipped if initial autoTranslate is wrong
+							if (!skipScroll)
+							{
+								this.container.scrollLeft += Math.round((tr.x - tx) * this.view.scale);
+								this.container.scrollTop += Math.round((tr.y - ty) * this.view.scale);
+							}
+
+							return;
+						}
 					}
 					
-					// Updates auto-translate to include padding and graph size
-					var dx = pad.x - pages.x * size.width;
-					var dy = pad.y - pages.y * size.height;
-					
-					if (!this.autoTranslate && (this.view.translate.x != dx || this.view.translate.y != dy))
-					{
-						this.autoTranslate = true;
-						this.view.x0 = pages.x;
-						this.view.y0 = pages.y;
-	
-						// NOTE: THIS INVOKES THIS METHOD AGAIN. UNFORTUNATELY THERE IS NO WAY AROUND THIS SINCE THE
-						// BOUNDS ARE KNOWN AFTER THE VALIDATION AND SETTING THE TRANSLATE TRIGGERS A REVALIDATION.
-						// SHOULD MOVE TRANSLATE/SCALE TO VIEW.
-						var tx = graph.view.translate.x;
-						var ty = graph.view.translate.y;
-						graph.view.setTranslate(dx, dy);
-						
-						// LATER: Fix rounding errors for small zoom
-						graph.container.scrollLeft += Math.round((dx - tx) * graph.view.scale);
-						graph.container.scrollTop += Math.round((dy - ty) * graph.view.scale);
-						
-						this.autoTranslate = false;
-						
-						return;
-					}
-	
 					graphSizeDidChange.apply(this, arguments);
 				}
 				else
 				{
 					// Fires event but does not invoke superclass
-					this.fireEvent(new mxEventObject(mxEvent.SIZE, 'bounds', this.getGraphBounds()));
+					this.fireEvent(new mxEventObject(mxEvent.SIZE,
+						'bounds', this.getGraphBounds()));
 				}
 			};
 		}
@@ -3123,6 +3342,7 @@ EditorUi.prototype.initCanvas = function()
 	var scrollPosition = null;
 	var forcedZoom = null;
 	var filter = null;
+	var mult = 20;
 	
 	var scheduleZoom = function(delay)
 	{
@@ -3188,7 +3408,7 @@ EditorUi.prototype.initCanvas = function()
 						}
 
 						graph.zoom(graph.cumulativeZoomFactor, null,
-							graph.isFastZoomEnabled() ? 20 : null);
+							graph.isFastZoomEnabled() ? mult : null);
 						var s = graph.view.scale;
 						
 						if (s != prev)
@@ -3280,6 +3500,10 @@ EditorUi.prototype.initCanvas = function()
 			}
 
 			scrollPosition = new mxPoint(graph.container.scrollLeft, graph.container.scrollTop);
+
+			// Applies final rounding to preview
+			var f = Math.round((Math.round(this.view.scale * this.cumulativeZoomFactor *
+				100) / 100) * mult) / (mult * this.view.scale);
 			
 			var cx = (ignoreCursorPosition || cursorPosition == null) ?
 				graph.container.scrollLeft + graph.container.clientWidth / 2 :
@@ -3288,9 +3512,9 @@ EditorUi.prototype.initCanvas = function()
 				graph.container.scrollTop + graph.container.clientHeight / 2 :
 				cursorPosition.y + graph.container.scrollTop - graph.container.offsetTop;
 			mainGroup.style.transformOrigin = cx + 'px ' + cy + 'px';
-			mainGroup.style.transform = 'scale(' + this.cumulativeZoomFactor + ')';
+			mainGroup.style.transform = 'scale(' + f + ')';
 			bgGroup.style.transformOrigin = cx + 'px ' + cy + 'px';
-			bgGroup.style.transform = 'scale(' + this.cumulativeZoomFactor + ')';
+			bgGroup.style.transform = 'scale(' + f + ')';
 			
 			if (graph.view.backgroundPageShape != null && graph.view.backgroundPageShape.node != null)
 			{
@@ -3305,8 +3529,11 @@ EditorUi.prototype.initCanvas = function()
 						((graph.container.clientHeight / 2 + graph.container.scrollTop -
 						page.offsetTop) + 'px') : ((cursorPosition.y + graph.container.scrollTop -
 						page.offsetTop - graph.container.offsetTop) + 'px')));
-				mxUtils.setPrefixedStyle(page.style, 'transform',
-					'scale(' + this.cumulativeZoomFactor + ')');
+				mxUtils.setPrefixedStyle(page.style, 'transform', 'scale(' + f + ')');
+			}
+			else
+			{
+				graph.view.validateBackgroundStyles(f, cx, cy);
 			}
 
 			graph.view.getDecoratorPane().style.opacity = '0';
@@ -3316,6 +3543,8 @@ EditorUi.prototype.initCanvas = function()
 			{
 				ui.hoverIcons.reset();
 			}
+
+			graph.fireEvent(new mxEventObject('zoomPreview', 'factor', f));
 		}
 		
 		scheduleZoom(graph.isFastZoomEnabled() ? delay : 0);
@@ -3470,7 +3699,7 @@ EditorUi.prototype.toggleFormatPanel = function(visible)
 	if (this.format != null)
 	{
 		this.formatWidth = (visible) ? 240 : 0;
-		this.formatContainer.style.display = (visible) ? '' : 'none';
+		this.formatContainer.style.width = this.formatWidth + 'px';
 		this.refresh();
 		this.format.refresh();
 		this.fireEvent(new mxEventObject('formatWidthChanged'));
@@ -3764,6 +3993,38 @@ EditorUi.prototype.canUndo = function()
 };
 
 /**
+ * Returns the current page and XML for the given page.
+ */
+EditorUi.prototype.getDiagramSnapshot = function()
+{
+	return {node: this.editor.getGraphXml()};
+};
+
+/**
+ * 
+ */
+EditorUi.prototype.updateDiagramData = function(snapshot, node)
+{
+	this.replaceDiagramData(xUtils.getXml(node));
+};
+
+/**
+ * 
+ */
+EditorUi.prototype.replaceDiagramData = function(data)
+{
+	this.editor.graph.model.beginUpdate();
+	try
+	{
+		this.editor.setGraphXml(mxUtils.parseXml(data).documentElement);
+	}
+	finally
+	{
+		this.editor.graph.model.endUpdate();				
+	}
+};
+
+/**
  * 
  */
 EditorUi.prototype.getEditBlankXml = function()
@@ -3820,6 +4081,53 @@ EditorUi.prototype.setScrollbars = function(value)
 };
 
 /**
+ * Function: fitDiagramToWindow
+ * 
+ * Zooms the diagram to fit into the window.
+ */
+EditorUi.prototype.fitDiagramToWindow = function()
+{
+	var graph = this.editor.graph;
+	var bounds = (graph.isSelectionEmpty()) ?
+		mxRectangle.fromRectangle(graph.getGraphBounds()) :
+		graph.getBoundingBox(graph.getSelectionCells())
+	var t = graph.view.translate;
+	var s = graph.view.scale;
+	
+	bounds.x = bounds.x / s - t.x;
+	bounds.y = bounds.y / s - t.y;
+	bounds.width /= s;
+	bounds.height /= s;
+
+	if (graph.backgroundImage != null)
+	{
+		bounds.add(new mxRectangle(0, 0,
+			graph.backgroundImage.width,
+			graph.backgroundImage.height));
+	}
+
+	if (bounds.width == 0 || bounds.height == 0)
+	{
+		graph.zoomTo(1);
+		this.resetScrollbars();
+	}
+	else
+	{
+		var b = Editor.fitWindowBorders;
+		
+		if (b != null)
+		{
+			bounds.x -= b.x;
+			bounds.y -= b.y;
+			bounds.width += b.width + b.x;
+			bounds.height += b.height + b.y;
+		}
+		
+		graph.fitWindow(bounds);
+	}
+};
+
+/**
  * Returns true if the graph has scrollbars.
  */
 EditorUi.prototype.hasScrollbars = function()
@@ -3833,56 +4141,69 @@ EditorUi.prototype.hasScrollbars = function()
 EditorUi.prototype.resetScrollbars = function()
 {
 	var graph = this.editor.graph;
+	var c = graph.container;
 	
 	if (!this.editor.extendCanvas)
 	{
-		graph.container.scrollTop = 0;
-		graph.container.scrollLeft = 0;
+		c.scrollTop = 0;
+		c.scrollLeft = 0;
 	
-		if (!mxUtils.hasScrollbars(graph.container))
+		if (!mxUtils.hasScrollbars(c))
 		{
 			graph.view.setTranslate(0, 0);
 		}
 	}
 	else if (!this.editor.isChromelessView())
 	{
-		if (mxUtils.hasScrollbars(graph.container))
+		if (mxUtils.hasScrollbars(c))
 		{
 			if (graph.pageVisible)
 			{
 				var pad = graph.getPagePadding();
-				graph.container.scrollTop = Math.floor(pad.y - this.editor.initialTopSpacing) - 1;
-				graph.container.scrollLeft = Math.floor(Math.min(pad.x,
-					(graph.container.scrollWidth - graph.container.clientWidth) / 2)) - 1;
+				c.scrollTop = Math.floor(pad.y - this.editor.initialTopSpacing) - 1;
+				c.scrollLeft = Math.floor(Math.min(pad.x,
+					(c.scrollWidth - c.clientWidth) / 2)) - 1;
 
 				// Scrolls graph to visible area
 				var bounds = graph.getGraphBounds();
 				
 				if (bounds.width > 0 && bounds.height > 0)
 				{
-					if (bounds.x > graph.container.scrollLeft + graph.container.clientWidth * 0.9)
+					if (bounds.x > c.scrollLeft + c.clientWidth * 0.9)
 					{
-						graph.container.scrollLeft = Math.min(bounds.x + bounds.width - graph.container.clientWidth, bounds.x - 10);
+						c.scrollLeft = Math.min(bounds.x + bounds.width - c.clientWidth, bounds.x - 10);
 					}
 					
-					if (bounds.y > graph.container.scrollTop + graph.container.clientHeight * 0.9)
+					if (bounds.y > c.scrollTop + c.clientHeight * 0.9)
 					{
-						graph.container.scrollTop = Math.min(bounds.y + bounds.height - graph.container.clientHeight, bounds.y - 10);
+						c.scrollTop = Math.min(bounds.y + bounds.height - c.clientHeight, bounds.y - 10);
 					}
 				}
 			}
 			else
 			{
 				var bounds = graph.getGraphBounds();
-				var width = Math.max(bounds.width, graph.scrollTileSize.width * graph.view.scale);
-				var height = Math.max(bounds.height, graph.scrollTileSize.height * graph.view.scale);
-				graph.container.scrollTop = Math.floor(Math.max(0, bounds.y - Math.max(20, (graph.container.clientHeight - height) / 4)));
-				graph.container.scrollLeft = Math.floor(Math.max(0, bounds.x - Math.max(0, (graph.container.clientWidth - width) / 2)));
+
+				if (bounds.width == 0 && bounds.height == 0)
+				{
+					c.scrollLeft = (c.scrollWidth - c.clientWidth) / 2;
+					c.scrollTop = (c.scrollHeight - c.clientHeight) / 2;
+				}
+				else
+				{
+					var width = Math.max(bounds.width, graph.scrollTileSize.width * graph.view.scale);
+					var height = Math.max(bounds.height, graph.scrollTileSize.height * graph.view.scale);
+
+					c.scrollLeft = Math.floor(Math.max(0, bounds.x - Math.max(0, (c.clientWidth - width) / 2)));
+					c.scrollTop = Math.floor(Math.max(0, bounds.y - Math.max(20, (c.clientHeight - height) / 4)));
+				}
 			}
 		}
 		else
 		{
-			var b = mxRectangle.fromRectangle((graph.pageVisible) ? graph.view.getBackgroundPageBounds() : graph.getGraphBounds())
+			var b = mxRectangle.fromRectangle((graph.pageVisible) ?
+				graph.view.getBackgroundPageBounds() :
+				graph.getGraphBounds())
 			var tr = graph.view.translate;
 			var s = graph.view.scale;
             b.x = b.x / s - tr.x;
@@ -3890,10 +4211,10 @@ EditorUi.prototype.resetScrollbars = function()
             b.width /= s;
             b.height /= s;
             
-            var dy = (graph.pageVisible) ? 0 : Math.max(0, (graph.container.clientHeight - b.height) / 4); 
+            var dy = (graph.pageVisible) ? 0 : Math.max(0, (c.clientHeight - b.height) / 4); 
             
 			graph.view.setTranslate(Math.floor(Math.max(0,
-				(graph.container.clientWidth - b.width) / 2) - b.x + 2),
+				(c.clientWidth - b.width) / 2) - b.x + 2),
 				Math.floor(dy - b.y + 1));
 		}
 	}
@@ -4076,7 +4397,7 @@ ChangePageSetup.prototype.execute = function()
 		var tmp = graph.backgroundImage;
 		var img = this.previousImage;
 
-		if (img != null && img.src != null && img.src.substring(0, 13) == 'data:page/id,')
+		if (img != null && Graph.isPageLink(img.src))
 		{
 			img = this.ui.createImageForPageLink(img.src, this.ui.currentPage);
 		}
@@ -4220,15 +4541,11 @@ EditorUi.prototype.setGridColor = function(value)
  */
 EditorUi.prototype.addUndoListener = function()
 {
-	var undo = this.actions.get('undo');
-	var redo = this.actions.get('redo');
-	
 	var undoMgr = this.editor.undoManager;
 	
     var undoListener = mxUtils.bind(this, function()
     {
-    	undo.setEnabled(this.canUndo());
-    	redo.setEnabled(this.canRedo());
+		this.updateActionStates();
     });
 
     undoMgr.addListener(mxEvent.ADD, undoListener);
@@ -4265,6 +4582,7 @@ EditorUi.prototype.updateActionStates = function()
 	var graph = this.editor.graph;
 	var ss = this.getSelectionState();
     var unlocked = graph.isEnabled() && !graph.isCellLocked(graph.getDefaultParent());
+	var editable = !this.editor.chromeless || this.editor.editable;
 
 	// Updates action states
 	var actions = ['cut', 'copy', 'bold', 'italic', 'underline', 'delete', 'duplicate',
@@ -4279,7 +4597,10 @@ EditorUi.prototype.updateActionStates = function()
 		this.actions.get(actions[i]).setEnabled(ss.cells.length > 0);
 	}
 
-	this.actions.get('grid').setEnabled(!this.editor.chromeless || this.editor.editable);
+	this.actions.get('grid').setEnabled(editable);
+	this.actions.get('undo').setEnabled(this.canUndo() && editable);
+	this.actions.get('redo').setEnabled(this.canRedo() && editable);
+	this.actions.get('swap').setEnabled(ss.cells.length == 2 && ss.vertices.length == 2);
 	this.actions.get('pasteSize').setEnabled(this.copiedSize != null && ss.vertices.length > 0);
 	this.actions.get('pasteData').setEnabled(this.copiedValue != null && ss.cells.length > 0);
 	this.actions.get('setAsDefaultStyle').setEnabled(graph.getSelectionCount() == 1);
@@ -4291,11 +4612,11 @@ EditorUi.prototype.updateActionStates = function()
 	this.actions.get('autosize').setEnabled(ss.vertices.length > 0);
 	this.actions.get('copySize').setEnabled(ss.vertices.length == 1);
 	this.actions.get('clearWaypoints').setEnabled(ss.connections);
+	this.actions.get('clearAnchors').setEnabled(ss.connections);
 	this.actions.get('curved').setEnabled(ss.edges.length > 0);
 	this.actions.get('turn').setEnabled(ss.cells.length > 0);
-	this.actions.get('group').setEnabled(!ss.row && !ss.cell &&
-		(ss.cells.length > 1 || (ss.vertices.length == 1 &&
-		graph.model.getChildCount(ss.cells[0]) == 0 &&
+	this.actions.get('group').setEnabled((ss.cells.length > 1 ||
+		(ss.vertices.length == 1 && graph.model.getChildCount(ss.cells[0]) == 0 &&
 		!graph.isContainer(ss.vertices[0]))));
 	this.actions.get('ungroup').setEnabled(!ss.row && !ss.cell && !ss.table &&
 		ss.vertices.length > 0 && (graph.isContainer(ss.vertices[0]) ||
@@ -4309,7 +4630,11 @@ EditorUi.prototype.updateActionStates = function()
 	this.actions.get('home').setEnabled(graph.view.currentRoot != null);
 	this.actions.get('enterGroup').setEnabled(ss.cells.length == 1 &&
 		graph.isValidRoot(ss.cells[0]));
+	this.actions.get('copyData').setEnabled(ss.cells.length == 1);
+	this.actions.get('copyAsText').setEnabled(ss.cells.length == 1);
 	this.actions.get('editLink').setEnabled(ss.cells.length == 1);
+	this.actions.get('editStyle').setEnabled(ss.cells.length == 1);
+	this.actions.get('editTooltip').setEnabled(ss.cells.length == 1);
 	this.actions.get('openLink').setEnabled(ss.cells.length == 1 &&
 		graph.getLinkForCell(ss.cells[0]) != null);
 	this.actions.get('guides').setEnabled(graph.isEnabled());
@@ -4317,7 +4642,7 @@ EditorUi.prototype.updateActionStates = function()
     this.actions.get('selectEdges').setEnabled(unlocked);
     this.actions.get('selectAll').setEnabled(unlocked);
     this.actions.get('selectNone').setEnabled(unlocked);
-
+	
 	var foldable = ss.vertices.length == 1 &&
 		graph.isCellFoldable(ss.vertices[0]);
 	this.actions.get('expand').setEnabled(foldable);
@@ -4375,7 +4700,8 @@ EditorUi.prototype.refresh = function(sizeDidChange)
 		}
 	}
 	
-	var effHsplitPosition = Math.max(0, Math.min(this.hsplitPosition, w - this.splitSize - 20));
+	var effHsplitPosition = Math.max(0, Math.min(
+		this.hsplitPosition, w - this.splitSize - 40));
 	var tmp = 0;
 	
 	if (this.menubar != null)
@@ -4404,16 +4730,20 @@ EditorUi.prototype.refresh = function(sizeDidChange)
 	this.formatContainer.style.display = (this.format != null) ? '' : 'none';
 	
 	var diagContOffset = this.getDiagramContainerOffset();
-	var contLeft = (this.hsplit.parentNode != null) ? (effHsplitPosition + this.splitSize) : 0;
+	var contLeft = (this.hsplit.parentNode != null) ? (effHsplitPosition) : 0;
 	this.footerContainer.style.height = this.footerHeight + 'px';
 	this.hsplit.style.top = this.sidebarContainer.style.top;
-	this.hsplit.style.bottom = (this.footerHeight + off) + 'px';
 	this.hsplit.style.left = effHsplitPosition + 'px';
 	this.footerContainer.style.display = (this.footerHeight == 0) ? 'none' : '';
 	
 	if (this.tabContainer != null)
 	{
 		this.tabContainer.style.left = contLeft + 'px';
+		this.hsplit.style.bottom = this.tabContainer.offsetHeight + 'px';
+	}
+	else
+	{
+		this.hsplit.style.bottom = (this.footerHeight + off) + 'px';
 	}
 
 	if (this.footerHeight > 0)
@@ -4428,6 +4758,7 @@ EditorUi.prototype.refresh = function(sizeDidChange)
 		this.tabContainer.style.bottom = (this.footerHeight + off) + 'px';
 		this.tabContainer.style.right = fw + 'px';
 		th = this.tabContainer.clientHeight;
+		this.checkTabScrollerOverflow();
 	}
 	
 	this.sidebarContainer.style.bottom = (this.footerHeight + off) + 'px';
@@ -4472,6 +4803,7 @@ EditorUi.prototype.createDivs = function()
 	this.toolbarContainer.style.left = '0px';
 	this.toolbarContainer.style.right = '0px';
 	this.sidebarContainer.style.left = '0px';
+	this.sidebarContainer.style.zIndex = '1';
 	this.formatContainer.style.right = '0px';
 	this.formatContainer.style.zIndex = '1';
 	this.diagramContainer.style.right = ((this.format != null) ? this.formatWidth : 0) + 'px';
@@ -4480,6 +4812,7 @@ EditorUi.prototype.createDivs = function()
 	this.footerContainer.style.bottom = '0px';
 	this.footerContainer.style.zIndex = mxPopupMenu.prototype.zIndex - 3;
 	this.hsplit.style.width = this.splitSize + 'px';
+	this.hsplit.style.zIndex = '1';
 	
 	if (!this.editor.chromeless)
 	{
@@ -4498,12 +4831,6 @@ EditorUi.prototype.createSidebarContainer = function()
 {
 	var div = document.createElement('div');
 	div.className = 'geSidebarContainer';
-	div.style.position = 'absolute';
-	div.style.width = '100%';
-	div.style.height = '100%';
-	div.style.border = '1px solid whiteSmoke';
-	div.style.overflowX = 'hidden';
-	div.style.overflowY = 'auto';
 
 	return div;
 };
@@ -4600,13 +4927,19 @@ EditorUi.prototype.createStatusContainer = function()
 {
 	var container = document.createElement('a');
 	container.className = 'geItem geStatus';
-	container.style.display = 'inline-flex';
-	container.style.alignItems = 'center';
 
 	// Handles data-action attribute
 	mxEvent.addListener(container, 'click', mxUtils.bind(this, function(evt)
 	{
 		var elt = mxEvent.getSource(evt);
+
+		if (elt != container)
+		{
+			while (elt.parentNode != container)
+			{
+				elt = elt.parentNode;
+			}
+		}
 		
 		if (elt.nodeName != 'A')
 		{
@@ -4713,6 +5046,12 @@ EditorUi.prototype.setStatusText = function(value)
 EditorUi.prototype.createStatusDiv = function(value)
 {
 	var div = document.createElement('div');
+	div.style.textOverflow = 'ellipsis';
+	div.style.display = 'inline-block';
+	div.style.whiteSpace = 'nowrap';
+	div.style.overflow = 'hidden';
+	div.style.minWidth = '0';
+
 	div.setAttribute('title', value);
 	div.innerHTML = Graph.sanitizeHtml(value);
 
@@ -4849,7 +5188,8 @@ EditorUi.prototype.addSplitHandler = function(elt, horizontal, dx, onChange)
  */
 EditorUi.prototype.prompt = function(title, defaultValue, fn)
 {
-	var dlg = new FilenameDialog(this, defaultValue, mxResources.get('apply'), function(newValue)
+	var dlg = new FilenameDialog(this, defaultValue,
+		mxResources.get('apply'), function(newValue)
 	{
 		fn(parseFloat(newValue));
 	}, title);
@@ -4925,37 +5265,70 @@ EditorUi.prototype.showDialog = function(elt, w, h, modal, closable, onClose, no
  */
 EditorUi.prototype.hideDialog = function(cancel, isEsc, matchContainer)
 {
+	// Finds topmost non-closing dialog
+	// This closes dialogs underneath the closing dialog when hideDialog
+	// is called in the process of closing the current dialog
+	var dlg = null;
+
 	if (this.dialogs != null && this.dialogs.length > 0)
+	{
+		for (var i = this.dialogs.length - 1; i >= 0; i--)
+		{
+			if (!this.dialogs[i].closing)
+			{
+				dlg = this.dialogs[i];
+				break;
+			}
+		}
+	}
+	
+	if (dlg != null)
 	{
 		if (matchContainer != null && matchContainer != this.dialog.container.firstChild)
 		{
 			return;
 		}
 		
-		var dlg = this.dialogs.pop();
+		dlg.closing = true;
 		
 		if (dlg.close(cancel, isEsc) == false) 
 		{
-			//add the dialog back if dialog closing is cancelled
-			this.dialogs.push(dlg);
+			delete dlg.closing;
+
 			return;
+		}
+
+		// Removes dialog from stack
+		delete dlg.closing;
+
+		var index = mxUtils.lastIndexOf(this.dialogs, dlg);
+
+		if (index >= 0)
+		{
+			this.dialogs.splice(index, 1);
 		}
 		
 		this.dialog = (this.dialogs.length > 0) ? this.dialogs[this.dialogs.length - 1] : null;
+
+		// Restores existing dialogs and adds new dialogs
 		this.editor.fireEvent(new mxEventObject('hideDialog'));
 		
-		if (this.dialog == null && this.editor.graph.container.style.visibility != 'hidden')
+		if (this.dialog == null && this.editor.graph.container != null &&
+			this.editor.graph.container.style.visibility != 'hidden')
 		{
 			window.setTimeout(mxUtils.bind(this, function()
 			{
-				if (this.editor.graph.isEditing() && this.editor.graph.cellEditor.textarea != null)
+				if (this.editor != null && (this.dialogs == null || this.dialogs.length == 0))
 				{
-					this.editor.graph.cellEditor.textarea.focus();
-				}
-				else
-				{
-					mxUtils.clearSelection();
-					this.editor.graph.container.focus();
+					if (this.editor.graph.isEditing() && this.editor.graph.cellEditor.textarea != null)
+					{
+						this.editor.graph.cellEditor.textarea.focus();
+					}
+					else
+					{
+						mxUtils.clearSelection();
+						this.editor.graph.container.focus();
+					}
 				}
 			}), 0);
 		}
@@ -5001,21 +5374,22 @@ EditorUi.prototype.ctrlEnter = function()
 /**
  * Display a color dialog.
  */
-EditorUi.prototype.pickColor = function(color, apply)
+EditorUi.prototype.pickColor = function(color, apply, defaultColor, defaultColorValue)
 {
 	var graph = this.editor.graph;
 	var selState = graph.cellEditor.saveSelection();
 	var h = 230 + ((Math.ceil(ColorDialog.prototype.presetColors.length / 12) +
 		Math.ceil(ColorDialog.prototype.defaultColors.length / 12)) * 17);
 	
-	var dlg = new ColorDialog(this, mxUtils.rgba2hex(color) || 'none', function(color)
+	var dlg = new ColorDialog(this, (color != 'default') ?
+		(mxUtils.rgba2hex(color) || 'none') : color, function(color)
 	{
 		graph.cellEditor.restoreSelection(selState);
 		apply(color);
 	}, function()
 	{
 		graph.cellEditor.restoreSelection(selState);
-	});
+	}, defaultColor, defaultColorValue);
 	
 	this.showDialog(dlg.container, 230, h, true, false);
 	dlg.init();
@@ -5038,6 +5412,72 @@ EditorUi.prototype.openFile = function()
 	{
 		window.openFile = null;
 	});
+};
+
+/**
+ * Translates this point by the given vector.
+ * 
+ * @param {number} dx X-coordinate of the translation.
+ * @param {number} dy Y-coordinate of the translation.
+ */
+EditorUi.prototype.base64ToBlob = function(base64Data, contentType)
+{
+	contentType = contentType || '';
+	var sliceSize = 1024;
+	var byteCharacters = atob(base64Data);
+	var bytesLength = byteCharacters.length;
+	var slicesCount = Math.ceil(bytesLength / sliceSize);
+	var byteArrays = new Array(slicesCount);
+
+	for (var sliceIndex = 0; sliceIndex < slicesCount; ++sliceIndex)
+	{
+		var begin = sliceIndex * sliceSize;
+		var end = Math.min(begin + sliceSize, bytesLength);
+
+		var bytes = new Array(end - begin);
+		
+		for (var offset = begin, i = 0 ; offset < end; ++i, ++offset)
+		{
+			bytes[i] = byteCharacters[offset].charCodeAt(0);
+		}
+		
+		byteArrays[sliceIndex] = new Uint8Array(bytes);
+	}
+
+	return new Blob(byteArrays, {type: contentType});
+};
+
+/**
+ * Copies the given cells and XML to the clipboard as an embedded image.
+ */
+EditorUi.prototype.writeImageToClipboard = function(dataUrl, w, h, error)
+{
+	var blob = this.base64ToBlob(dataUrl.substring(dataUrl.indexOf(',') + 1), 'image/png');
+	var html = '<img src="' + dataUrl + '" width="' + w + '" height="' + h + '">';
+	var cbi = new ClipboardItem({'image/png': blob,
+		'text/html': new Blob([html], {type: 'text/html'})});
+	navigator.clipboard.write([cbi])['catch'](error);
+};
+
+/**
+ * Copies the given cells and XML to the clipboard as an embedded image.
+ */
+EditorUi.prototype.writeHtmlToClipboard = function(html, error)
+{
+	var cbi = new ClipboardItem(
+	{
+		'text/plain': new Blob([Editor.convertHtmlToText(html)], {type: 'text/plain'}),
+		'text/html': new Blob([html], {type: 'text/html'})
+	});
+	navigator.clipboard.write([cbi])['catch'](error);
+};
+
+/**
+ * Writes the given text to the clipboard.
+ */
+EditorUi.prototype.writeTextToClipboard = function(text, error)
+{
+	navigator.clipboard.writeText(text)['catch'](error);
 };
 
 /**
@@ -5385,7 +5825,8 @@ EditorUi.prototype.saveFile = function(forceDialog)
 	}
 	else
 	{
-		var dlg = new FilenameDialog(this, this.editor.getOrCreateFilename(), mxResources.get('save'), mxUtils.bind(this, function(name)
+		var dlg = new FilenameDialog(this, this.editor.getOrCreateFilename(),
+			mxResources.get('save'), mxUtils.bind(this, function(name)
 		{
 			this.save(name);
 		}), null, mxUtils.bind(this, function(name)
@@ -5399,7 +5840,7 @@ EditorUi.prototype.saveFile = function(forceDialog)
 			
 			return false;
 		}));
-		this.showDialog(dlg.container, 300, 100, true, true);
+		this.showDialog(dlg.container, 340, 96, true, true);
 		dlg.init();
 	}
 };
@@ -5657,15 +6098,28 @@ EditorUi.prototype.createOutline = function(wnd)
 };
 
 // Alt+Shift+Keycode mapping to action
-EditorUi.prototype.altShiftActions = {67: 'clearWaypoints', // Alt+Shift+C
+EditorUi.prototype.altShiftActions = {
   65: 'connectionArrows', // Alt+Shift+A
+  82: 'clearWaypoints', // Alt+Shift+R
   76: 'editLink', // Alt+Shift+L
-  80: 'connectionPoints', // Alt+Shift+P
+  79: 'connectionPoints', // Alt+Shift+O
+  81: 'editConnectionPoints', // Alt+Shift+Q
   84: 'editTooltip', // Alt+Shift+T
   86: 'pasteSize', // Alt+Shift+V
-  88: 'copySize', // Alt+Shift+X
+  70: 'copySize', // Alt+Shift+F
   66: 'copyData', // Alt+Shift+B
   69: 'pasteData' // Alt+Shift+E
+};
+
+// Ctrl+Alt+Shift+Keycode mapping to action
+EditorUi.prototype.ctrlAltShiftActions = {
+	70: 'bringForward', // Ctrl+Alt+Shift+F
+	66: 'sendBackward', // Ctrl+Alt+Shift+B
+};
+
+// Ctrl+Alt+Keycode mapping to action
+EditorUi.prototype.ctrlAltActions = {
+	88: 'copyAsImage' // Ctrl+Alt+X
 };
 
 /**
@@ -5682,12 +6136,18 @@ EditorUi.prototype.createKeyHandler = function(editor)
 	{
 		// Handles undo/redo/ctrl+./,/u via action and allows ctrl+b/i
 		// only if editing value is HTML (except for FF and Safari)
+		// 66, 73 are keycodes for editing actions like bold, italic
 		return !(mxEvent.isShiftDown(evt) && evt.keyCode == 9) &&
 			((!this.isControlDown(evt) || mxEvent.isShiftDown(evt) ||
 			(evt.keyCode != 90 && evt.keyCode != 89 && evt.keyCode != 188 &&
 			evt.keyCode != 190 && evt.keyCode != 85)) && ((evt.keyCode != 66 && evt.keyCode != 73) ||
 			!this.isControlDown(evt) || (this.graph.cellEditor.isContentEditing() &&
-			!mxClient.IS_FF && !mxClient.IS_SF)) && isEventIgnored.apply(this, arguments));
+			!mxClient.IS_FF && !mxClient.IS_SF)) &&
+			((evt.keyCode != 109 && evt.keyCode != 107) ||
+			(!this.isControlDown(evt) && !mxEvent.isShiftDown(evt)) ||
+			(!this.graph.cellEditor.isContentEditing() &&
+			!mxClient.IS_FF && !mxClient.IS_SF)) &&
+			isEventIgnored.apply(this, arguments));
 	};
 	
 	// Ignores graph enabled state but not chromeless state
@@ -5857,18 +6317,29 @@ EditorUi.prototype.createKeyHandler = function(editor)
 	{
 		if (graph.isEnabled())
 		{
-			// TODO: Add alt modified state in core API, here are some specific cases
-			if (mxEvent.isShiftDown(evt) && mxEvent.isAltDown(evt))
-			{
-				var action = editorUi.actions.get(editorUi.altShiftActions[evt.keyCode]);
+			var action = null;
 
-				if (action != null)
-				{
-					return action.funct;
-				}
+			// TODO: Add alt modifier state in core API, here are some specific cases
+			if (mxEvent.isShiftDown(evt) && this.isControlDown(evt) && mxEvent.isAltDown(evt))
+			{
+				action = editorUi.actions.get(editorUi.ctrlAltShiftActions[evt.keyCode]);
+
+			}
+			else if (mxEvent.isShiftDown(evt) && mxEvent.isAltDown(evt))
+			{
+				action = editorUi.actions.get(editorUi.altShiftActions[evt.keyCode]);
+
+			}
+			else if (this.isControlDown(evt) && mxEvent.isAltDown(evt))
+			{
+				action = editorUi.actions.get(editorUi.ctrlAltActions[evt.keyCode]);
 			}
 			
-			if (directions[evt.keyCode] != null && !graph.isSelectionEmpty())
+			if (action != null)
+			{
+				return action.funct;
+			}
+			else if (directions[evt.keyCode] != null && !graph.isSelectionEmpty())
 			{
 				// On macOS, Control+Cursor is used by Expose so allow for Alt+Control to resize
 				if (!this.isControlDown(evt) && mxEvent.isShiftDown(evt) && mxEvent.isAltDown(evt))
@@ -5984,10 +6455,10 @@ EditorUi.prototype.createKeyHandler = function(editor)
 	keyHandler.bindAction(107, true, 'zoomIn'); // Ctrl+Plus
 	keyHandler.bindAction(109, true, 'zoomOut'); // Ctrl+Minus
 	keyHandler.bindAction(80, true, 'print'); // Ctrl+P
-	keyHandler.bindAction(79, true, 'outline', true); // Ctrl+Shift+O
-
+	
 	if (!this.editor.chromeless || this.editor.editable)
 	{
+		keyHandler.bindAction(79, true, 'outline', true); // Ctrl+Shift+O
 		keyHandler.bindControlKey(36, function() { if (graph.isEnabled()) { graph.foldCells(true); }}); // Ctrl+Home
 		keyHandler.bindControlKey(35, function() { if (graph.isEnabled()) { graph.foldCells(false); }}); // Ctrl+End
 		keyHandler.bindControlKey(13, function() { ui.ctrlEnter(); }); // Ctrl+Enter
@@ -6017,6 +6488,8 @@ EditorUi.prototype.createKeyHandler = function(editor)
 		keyHandler.bindAction(68, true, 'duplicate'); // Ctrl+D
 		keyHandler.bindAction(68, true, 'setAsDefaultStyle', true); // Ctrl+Shift+D   
 		keyHandler.bindAction(90, true, 'undo'); // Ctrl+Z
+		keyHandler.bindAction(90, true, 'redo', true); // Ctrl+Shift+Z
+		keyHandler.bindAction(89, true, 'redo'); // Ctrl+Y
 		keyHandler.bindAction(89, true, 'autosize', true); // Ctrl+Shift+Y
 		keyHandler.bindAction(88, true, 'cut'); // Ctrl+X
 		keyHandler.bindAction(67, true, 'copy'); // Ctrl+C
@@ -6030,22 +6503,49 @@ EditorUi.prototype.createKeyHandler = function(editor)
 		keyHandler.bindAction(80, true, 'format', true); // Ctrl+Shift+P
 		keyHandler.bindAction(85, true, 'underline'); // Ctrl+U
 		keyHandler.bindAction(85, true, 'ungroup', true); // Ctrl+Shift+U
+		keyHandler.bindAction(109, true, 'decreaseFontSize', true); // Ctrl+Shift+Minus
+		keyHandler.bindAction(107, true, 'increaseFontSize', true); // Ctrl+Shift+Plus
+		keyHandler.bindAction(219, true, 'decreaseFontSize', true); // Ctrl+{
+		keyHandler.bindAction(221, true, 'increaseFontSize', true); // Ctrl+}
 		keyHandler.bindAction(190, true, 'superscript'); // Ctrl+.
 		keyHandler.bindAction(188, true, 'subscript'); // Ctrl+,
 		keyHandler.bindAction(13, false, 'keyPressEnter'); // Enter
 		keyHandler.bindKey(113, function() { if (graph.isEnabled()) { graph.startEditingAtCell(); }}); // F2
 	}
 	
-	if (!mxClient.IS_WIN)
-	{
-		keyHandler.bindAction(90, true, 'redo', true); // Ctrl+Shift+Z
-	}
-	else
-	{
-		keyHandler.bindAction(89, true, 'redo'); // Ctrl+Y
-	}
-	
 	return keyHandler;
+};
+
+/**
+ * Creates the keyboard event handler for the current graph and history.
+ */
+EditorUi.prototype.createHelpIcon = function(href)
+{
+	var link = document.createElement('div');
+	link.setAttribute('title', mxResources.get('help'));
+	link.style.display = 'inline';
+	link.style.marginLeft = '8px';
+	link.style.cursor = 'help';
+
+	var icon = document.createElement('img');
+	icon.setAttribute('src', Editor.helpImage);
+	icon.setAttribute('valign', 'middle');
+	icon.setAttribute('border', '0');
+	icon.className = 'geAdaptiveAsset';
+	mxUtils.setOpacity(icon, 60);
+	icon.style.marginTop = '-4px';
+	icon.style.height = '16px';
+	icon.style.width = '16px';
+	link.appendChild(icon);
+
+	mxEvent.addListener(link, 'click', mxUtils.bind(this, function(evt)
+	{
+		this.hideCurrentMenu();
+		this.openLink(href);
+		mxEvent.consume(evt);
+	}));
+
+	return link;
 };
 
 /**

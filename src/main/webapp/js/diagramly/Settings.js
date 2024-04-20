@@ -57,7 +57,7 @@ var mxSettings =
 		{
 			mxSettings.settings.ui = ui;
 
-			if (ui == 'kennedy' || ui == '')
+			if (!Editor.enableCssDarkMode && (ui == 'kennedy' || ui == ''))
 			{
 				mxSettings.settings.darkMode = false;
 			}
@@ -69,7 +69,7 @@ var mxSettings =
 			var value = mxSettings.getMainSettings();
 			value.ui = ui;
 
-			if (ui == 'kennedy')
+			if (!Editor.enableCssDarkMode && ui == 'kennedy')
 			{
 				value.darkMode = false;
 			}
@@ -263,8 +263,7 @@ var mxSettings =
 			plugins: [],
 			recentColors: [],
 			formatWidth: mxSettings.defaultFormatWidth,
-			createTarget: urlParams['sketch'] == '1' ||
-				Editor.enableSimpleTheme,
+			createTarget: urlParams['sketch'] == '1',
 			pageFormat: mxGraph.prototype.pageFormat,
 			search: true,
 			showStartScreen: true,

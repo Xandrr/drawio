@@ -54,6 +54,26 @@ GitHubFile.prototype.getHash = function()
 /**
  * Returns true if copy, export and print are not allowed for this file.
  */
+GitHubFile.prototype.getFileUrl = function()
+{
+	return 'https://github.com/' + encodeURIComponent(this.meta.org) + '/' +
+		encodeURIComponent(this.meta.repo) + '/blob/' +
+		this.meta.ref + '/' + this.meta.path;
+};
+
+/**
+ * Returns true if copy, export and print are not allowed for this file.
+ */
+GitHubFile.prototype.getFolderUrl = function()
+{
+	return 'https://github.com/' + encodeURIComponent(this.meta.org) + '/' +
+		encodeURIComponent(this.meta.repo) + '/tree/' + this.meta.ref + '/' +
+		this.meta.path.split('/').slice(0, -1).join('/');
+};
+
+/**
+ * Returns true if copy, export and print are not allowed for this file.
+ */
 GitHubFile.prototype.getPublicUrl = function(fn)
 {
 	if (this.meta.download_url != null)
@@ -144,17 +164,6 @@ GitHubFile.prototype.isRenamable = function()
 GitHubFile.prototype.getLatestVersion = function(success, error)
 {
 	this.peer.getFile(this.getId(), success, error);
-};
-
-/**
- * Translates this point by the given vector.
- * 
- * @param {number} dx X-coordinate of the translation.
- * @param {number} dy Y-coordinate of the translation.
- */
-GitHubFile.prototype.isCompressedStorage = function()
-{
-	return false;
 };
 
 /**
@@ -288,9 +297,10 @@ GitHubFile.prototype.saveFile = function(title, revision, success, error, unload
 							
 							if (error != null)
 							{
-								// Passes current commit message to avoid
-								// multiple dialogs after synchronize
-								error({commitMessage: message});
+								// Adds commit message to save after
+								// conflict has been resolved
+								err.commitMessage = message;
+								error(err);
 							}
 						}
 						else if (error != null)

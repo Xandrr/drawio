@@ -2,6 +2,7 @@ window.PLUGINS_BASE_PATH = '.';
 window.TEMPLATE_PATH = 'templates';
 window.DRAW_MATH_URL = 'math/es5';
 window.DRAWIO_BASE_URL = '.'; //Prevent access to online website since it is not allowed
+window.DRAWIO_SERVER_URL = '.';
 FeedbackDialog.feedbackUrl = 'https://log.draw.io/email';
 EditorUi.draftSaveDelay = 5000;
 //Disables eval for JS (uses shapes-14-6-5.min.js)
@@ -52,7 +53,7 @@ mxStencilRegistry.allowEval = false;
 	PrintDialog.previewEnabled = false;
 	
 	PrintDialog.electronPrint = function(editorUi, allPages, pagesFrom, pagesTo, 
-			fit, sheetsAcross, sheetsDown, zoom, pageScale, pageFormat)
+			fit, sheetsAcross, sheetsDown, zoom, pageScale)
 	{
 		var xml = '', title = '';
 		var file = editorUi.getCurrentFile();
@@ -79,8 +80,6 @@ mxStencilRegistry.allowEval = false;
 			from: pagesFrom - 1,
 			to: pagesTo - 1,
 			allPages: allPages,
-			pageWidth: pageFormat.width,
-			pageHeight: pageFormat.height,
 			pageScale: pageScale,
 			fit: fit,
 			sheetsAcross: sheetsAcross,
@@ -282,16 +281,15 @@ mxStencilRegistry.allowEval = false;
 				}
 			}
 			
-			this.addMenuItems(menu, ['-', 'pageSetup', 'print', '-', 'close'], parent);
-			// LATER: Find API for application.quit
+			this.addMenuItems(menu, ['-', 'pageSetup', 'print', '-', 'close', '-', 'exit'], parent);
 		})));
 	};
 
 	var graphCreateLinkForHint = Graph.prototype.createLinkForHint;
 	
-	Graph.prototype.createLinkForHint = function(href, label)
+	Graph.prototype.createLinkForHint = function(href, label, associatedCell)
 	{
-		var a = graphCreateLinkForHint.call(this, href, label);
+		var a = graphCreateLinkForHint.call(this, href, label, associatedCell);
 		
 		if (href != null && !this.isCustomLink(href))
 		{
@@ -320,10 +318,10 @@ mxStencilRegistry.allowEval = false;
 		var editorUi = this;
 		var graph = this.editor.graph;
 		
-		electron.registerMsgListener('isModified', () =>
+		electron.registerMsgListener('isModified', (uniqueId) =>
 		{
 			const currentFile = editorUi.getCurrentFile();
-			let reply = {isModified: false, draftPath: null};
+			let reply = {isModified: false, draftPath: null, uniqueId: uniqueId};
 
 			if (currentFile != null)
 			{
@@ -769,6 +767,13 @@ mxStencilRegistry.allowEval = false;
 				});
 			}, true).container, 360, 225, true, false);
 		});
+
+		editorUi.actions.addAction('exit', function()
+		{
+			electron.request({
+				action: 'exit'
+			});
+		});
 	}
 	
 	var appLoad = App.prototype.load;
@@ -949,7 +954,7 @@ mxStencilRegistry.allowEval = false;
 							
 							file.inConflictState = true;
 
-							file.addConflictStatus(mxUtils.bind(this, function()
+							file.addConflictStatus(null, mxUtils.bind(this, function()
 							{
 								file.ui.editor.setStatus(mxUtils.htmlEntities(
 									mxResources.get('updatingDocument')));
@@ -1011,6 +1016,7 @@ mxStencilRegistry.allowEval = false;
 			{
 				var library = new DesktopLibrary(this, data, fileEntry);
 				this.loadLibrary(library);
+				this.showSidebar();
 			}
 			catch (e)
 			{
@@ -1048,6 +1054,21 @@ mxStencilRegistry.allowEval = false;
         {
         	this.spinner.stop();
         }
+	};
+	
+	EditorUi.prototype.normalizeFilename = function(title, defaultExtension)
+	{
+		var tokens = title.split('.');
+		var ext = (tokens.length > 1) ? tokens[tokens.length - 1] : '';
+		defaultExtension = (defaultExtension != null) ? defaultExtension : 'drawio';
+
+		if (tokens.length == 1 || mxUtils.indexOf(['xml',
+			'html', 'drawio', 'png', 'svg'], ext) < 0)
+		{
+			tokens.push(defaultExtension);
+		}
+
+		return tokens.join('.');
 	};
 
 	//In order not to repeat the logic for opening a file, we collect files information here and use them in openLocalFile
@@ -1095,16 +1116,11 @@ mxStencilRegistry.allowEval = false;
 						this.hideDialog();
 						fn(fileEntry, drafts[index].data, stat, null, true);
 						await requestSync({action: 'deleteFile', file: drafts[index].path});
-					}), mxUtils.bind(this, function(index)
+					}), mxUtils.bind(this, async function(index)
 					{
 						index = index || 0;
-					
-						// Discard draft
-						this.confirm(mxResources.get('areYouSure'), null, mxUtils.bind(this, async function()
-						{
-							await requestSync({action: 'deleteFile', file: drafts[index].path});
-							this.hideDialog();
-						}), mxResources.get('no'), mxResources.get('yes'));
+						await requestSync({action: 'deleteFile', file: drafts[index].path});
+						this.hideDialog();
 					}), null, null, null, (drafts.length > 1) ? drafts : null);
 					
 					this.showDialog(dlg.container, 640, 480, true, false);
@@ -1149,6 +1165,7 @@ mxStencilRegistry.allowEval = false;
 						try
 						{
 							this.loadLibrary(new LocalLibrary(this, xml, name));
+							this.showSidebar();
 						}
 						catch (e)
 						{
@@ -1356,8 +1373,6 @@ mxStencilRegistry.allowEval = false;
 		return false;
 	};
 	
-	// Restores default implementation of open with autosave
-	LocalFile.prototype.open = DrawioFile.prototype.open;
 	var autoSaveEnabled = false;
 
 	LocalFile.prototype.save = function(revision, success, error, unloading, overwrite)
@@ -1398,23 +1413,6 @@ mxStencilRegistry.allowEval = false;
 	{
 		this.editable = editable;
 	};
-
-	LocalFile.prototype.getFilename = function()
-	{
-		var filename = this.title;
-		
-		// Adds default extension
-		if (filename.length > 0 && (!/(\.xml)$/i.test(filename) && !/(\.html)$/i.test(filename) &&
-			!/(\.svg)$/i.test(filename) && !/(\.png)$/i.test(filename) && !/(\.drawio)$/i.test(filename)))
-		{
-			filename += '.drawio';
-		}
-		
-		return filename;
-	};
-	
-	// Prototype inheritance needs new functions to be added to subclasses
-	LocalLibrary.prototype.getFilename = LocalFile.prototype.getFilename;
 	
 	LocalFile.prototype.saveFile = async function(revision, success, error, unloading, overwrite)
 	{
@@ -1512,47 +1510,55 @@ mxStencilRegistry.allowEval = false;
 				}
 			});
 			
-			if (this.fileObject == null)
+			try
 			{
-				var lastDir = localStorage.getItem('.lastSaveDir');
-				var name = this.getFilename();
-				var ext = null;
-				
-				if (name != null)
+				if (this.fileObject == null)
 				{
-					var idx = name.lastIndexOf('.');
+					var lastDir = localStorage.getItem('.lastSaveDir');
+					var name = this.ui.normalizeFilename(this.getTitle(),
+						this.constructor == LocalLibrary ? 'xml' : null);
+					var ext = null;
 					
-					if (idx > 0)
+					if (name != null)
 					{
-						ext = name.substring(idx + 1);
-						name = name.substring(0, idx);
+						var idx = name.lastIndexOf('.');
+						
+						if (idx > 0)
+						{
+							ext = name.substring(idx + 1);
+						}
+					}
+					
+					var path = await requestSync({
+						action: 'showSaveDialog',
+						defaultPath: (lastDir || (await requestSync('getDocumentsFolder'))) + '/' + name,
+						filters: this.ui.createFileSystemFilters(ext)
+					});
+
+					if (path != null)
+					{
+						localStorage.setItem('.lastSaveDir', await requestSync({action: 'dirname', path: path}));
+						this.fileObject = new Object();
+						this.fileObject.path = path;
+						this.fileObject.name = path.replace(/^.*[\\\/]/, '');
+						this.fileObject.type = 'utf-8';
+						this.title = this.fileObject.name;
+						this.addToRecent();
+						fn();
+					}
+					else
+					{
+						this.ui.spinner.stop();
 					}
 				}
-				
-				var path = await requestSync({
-					action: 'showSaveDialog',
-					defaultPath: (lastDir || (await requestSync('getDocumentsFolder'))) + '/' + name,
-					filters: this.ui.createFileSystemFilters(ext)
-				});
-
-		        if (path != null)
-		        {
-		        	localStorage.setItem('.lastSaveDir', await requestSync({action: 'dirname', path: path}));
-					this.fileObject = new Object();
-					this.fileObject.path = path;
-					this.fileObject.name = path.replace(/^.*[\\\/]/, '');
-					this.fileObject.type = 'utf-8';
-					this.addToRecent();
+				else
+				{
 					fn();
 				}
-		        else
-		        {
-	            	this.ui.spinner.stop();
-		        }
 			}
-			else
+			catch (e)
 			{
-				fn();
+				error(e);
 			}
 		}
 	};
@@ -1573,43 +1579,55 @@ mxStencilRegistry.allowEval = false;
 
 	LocalFile.prototype.saveAs = async function(title, success, error)
 	{
-		var lastDir = localStorage.getItem('.lastSaveDir');
-		var name = this.getFilename();
-		var ext = null;
-		
-		if (name == '' && this.fileObject != null && this.fileObject.name != null)
+		try
 		{
-			name = this.fileObject.name;
-			var idx = name.lastIndexOf('.');
+			var lastDir = (this.fileObject != null && this.fileObject.path != null) ?
+				await requestSync({action: 'dirname', path: this.fileObject.path}) :
+				localStorage.getItem('.lastSaveDir');
+			var name = this.ui.normalizeFilename(this.getTitle(),
+				this.constructor == LocalLibrary ? 'xml' : null);
+			var ext = null;
 			
-			if (idx > 0)
+			if (name != null)
 			{
-				ext = name.substring(idx + 1);
-				name = name.substring(0, idx);
+				var idx = name.lastIndexOf('.');
+				
+				if (idx > 0)
+				{
+					ext = name.substring(idx + 1);
+				}
+			}
+			
+			var path = await requestSync({
+				action: 'showSaveDialog',
+				defaultPath: (lastDir || (await requestSync('getDocumentsFolder'))) + '/' + name,
+				filters: this.ui.createFileSystemFilters(ext)
+			});
+
+			if (path != null)
+			{
+				localStorage.setItem('.lastSaveDir', await requestSync({action: 'dirname', path: path}));
+				this.fileObject = new Object();
+				this.fileObject.path = path;
+				this.fileObject.name = path.replace(/^.*[\\\/]/, '');
+				this.fileObject.type = 'utf-8';
+				this.title = this.fileObject.name;
+				this.addToRecent();
+				this.setEditable(true); //In case original file is read only
+				this.save(false, success, error, null, true);
 			}
 		}
-		
-		var path = await requestSync({
-			action: 'showSaveDialog',
-			defaultPath: (lastDir || (await requestSync('getDocumentsFolder'))) + '/' + name,
-			filters: this.ui.createFileSystemFilters(ext)
-		});
-
-        if (path != null)
-        {
-        	localStorage.setItem('.lastSaveDir', await requestSync({action: 'dirname', path: path}));
-			this.fileObject = new Object();
-			this.fileObject.path = path;
-			this.fileObject.name = path.replace(/^.*[\\\/]/, '');
-			this.fileObject.type = 'utf-8';
-			this.addToRecent();
-			this.setEditable(true); //In case original file is read only
-			this.save(false, success, error, null, true);
+		catch (e)
+		{
+			error(e);
 		}
 	};
 	
-	LocalFile.prototype.saveDraft = function()
+	LocalFile.prototype.saveDraft = function(data)
 	{
+		// Save draft only if file is not saved (prevents creating draft file after actual file is saved)
+		if (!this.isModified()) return;
+
 		if (this.fileObject == null)
 		{
 			//Use indexed db for unsaved files
@@ -1620,7 +1638,7 @@ mxStencilRegistry.allowEval = false;
 			electron.request({
 				action: 'saveDraft',
 				fileObject: this.fileObject,
-				data: this.ui.getFileData()
+				data: (data != null) ? data : this.ui.getFileData()
 			}, mxUtils.bind(this, function(draftFileName)
 			{
 				this.fileObject.draftFileName = draftFileName;
@@ -1651,6 +1669,11 @@ mxStencilRegistry.allowEval = false;
 		}
 	};
 
+	LocalLibrary.prototype.addToRecent = function()
+	{
+		// do nothing
+	};
+	
 	/**
 	 * Loads the given file handle as a local file.
 	 */
@@ -1823,160 +1846,16 @@ mxStencilRegistry.allowEval = false;
 		electron.sendMessage('toggleStoreBkp');
 	}
 	
+	App.prototype.toggleGoogleFonts = function()
+	{
+		electron.sendMessage('toggleGoogleFonts');
+	}
+
 	App.prototype.openDevTools = function()
 	{
 		electron.sendMessage('openDevTools');
 	}
-
-	var origUpdateHeader = App.prototype.updateHeader;
 	
-	App.prototype.updateHeader = function()
-	{
-		origUpdateHeader.apply(this, arguments);
-		
-		if (urlParams['winCtrls'] != '1')
-		{
-			return;	
-		}
-		
-		document.querySelectorAll('.geStatus').forEach(i => i.style.webkitAppRegion = 'no-drag');
-		var menubarContainer = document.querySelector('.geMenubarContainer');
-		
-		if (urlParams['sketch'] == '1')
-		{
-			menubarContainer = this.titlebar;
-		}
-
-		menubarContainer.style.webkitAppRegion = 'drag';
-		
-		//Add window control buttons
-		this.windowControls = document.createElement('div');
-		this.windowControls.id = 'geWindow-controls';
-		this.windowControls.innerHTML = 
-			'<div class="button" id="min-button">' +
-			'    <svg width="10" height="1" viewBox="0 0 11 1">' +
-			'        <path d="m11 0v1h-11v-1z" stroke-width=".26208"/>' +
-			'    </svg>' +
-			'</div>' +
-			'<div class="button" id="max-button">' +
-			'    <svg width="10" height="10" viewBox="0 0 10 10">' +
-			'        <path d="m10-1.6667e-6v10h-10v-10zm-1.001 1.001h-7.998v7.998h7.998z" stroke-width=".25" />' +
-			'    </svg>' +
-			'</div>' +
-			'<div class="button" id="restore-button">' +
-			'    <svg width="10" height="10" viewBox="0 0 11 11">' +
-			'        <path' +
-			'        d="m11 8.7978h-2.2021v2.2022h-8.7979v-8.7978h2.2021v-2.2022h8.7979zm-3.2979-5.5h-6.6012v6.6011h6.6012zm2.1968-2.1968h-6.6012v1.1011h5.5v5.5h1.1011z"' +
-			'        stroke-width=".275" />' +
-			'    </svg>' +
-			'</div>' +
-			'<div class="button" id="close-button">' +
-			'    <svg width="10" height="10" viewBox="0 0 12 12">' +
-			'        <path' +
-			'        d="m6.8496 6 5.1504 5.1504-0.84961 0.84961-5.1504-5.1504-5.1504 5.1504-0.84961-0.84961 5.1504-5.1504-5.1504-5.1504 0.84961-0.84961 5.1504 5.1504 5.1504-5.1504 0.84961 0.84961z"' +
-			'        stroke-width=".3" />' +
-			'    </svg>' +
-			'</div>';
-		
-		if (Editor.currentTheme == 'atlas')
-		{
-			this.windowControls.style.top = '9px';
-		}
-		else if (urlParams['sketch'] == '1')
-		{
-			this.windowControls.style.top = '-1px';
-		}
-		
-		menubarContainer.appendChild(this.windowControls);
-
-		var handleDarkModeChange = mxUtils.bind(this, function ()
-		{
-			if (Editor.currentTheme == 'atlas' || Editor.isDarkMode())
-			{
-				this.windowControls.style.fill = 'white';
-				document.querySelectorAll('#geWindow-controls .button').forEach(b => b.className = 'button dark');
-			}
-			else
-			{
-				this.windowControls.style.fill = '#999';
-				document.querySelectorAll('#geWindow-controls .button').forEach(b => b.className = 'button white');
-			}
-		});
-		
-		handleDarkModeChange();
-		this.addListener('darkModeChanged', handleDarkModeChange);
-		
-		if (this.appIcon != null)
-		{
-			this.appIcon.style.webkitAppRegion = 'no-drag';
-		}
-		
-		if (this.menubar != null)
-		{
-			this.menubar.container.style.webkitAppRegion = 'no-drag';
-			
-			if (Editor.currentTheme == 'atlas')
-			{
-				this.menubar.container.style.width = 'fit-content';
-			}
-			
-			if (this.menubar.langIcon != null)
-			{
-				this.menubar.langIcon.parentNode.removeChild(this.menubar.langIcon);
-				menubarContainer.appendChild(this.menubar.langIcon);
-			}
-		}
-		
-		window.onbeforeunload = async (event) => {
-		    /* If window is reloaded, remove win event listeners
-		    (DOM element listeners get auto garbage collected but not
-		    Electron win listeners as the win is not dereferenced unless closed) */
-			await requestSync({action: 'windowAction', method: 'removeAllListeners'});
-		}
-		
-	    // Make minimise/maximise/restore/close buttons work when they are clicked
-	    document.getElementById('min-button').addEventListener("click", async event => {
-			await requestSync({action: 'windowAction', method: 'minimize'});
-	    });
-	
-	    document.getElementById('max-button').addEventListener("click", async event => {
-			await requestSync({action: 'windowAction', method: 'maximize'});
-	    });
-	
-	    document.getElementById('restore-button').addEventListener("click", async event => {
-			await requestSync({action: 'windowAction', method: 'unmaximize'});
-	    });
-	
-	    document.getElementById('close-button').addEventListener("click", async event => {
-			await requestSync({action: 'windowAction', method: 'close'});
-	    });
-	
-	    // Toggle maximise/restore buttons when maximisation/unmaximisation occurs
-	    toggleMaxRestoreButtons();
-		electron.registerMsgListener('maximize', toggleMaxRestoreButtons)
-		electron.registerMsgListener('unmaximize', toggleMaxRestoreButtons)
-		electron.registerMsgListener('resize', toggleMaxRestoreButtons)
-	
-	    async function toggleMaxRestoreButtons() {
-	        if (await requestSync({action: 'windowAction', method: 'isMaximized'})) {
-	            document.body.classList.add('geMaximized');
-	        } else {
-	            document.body.classList.remove('geMaximized');
-	        }
-	    }
-	}
-	
-	var origUpdateDocumentTitle = App.prototype.updateDocumentTitle;
-	
-	App.prototype.updateDocumentTitle = function()
-	{
-		origUpdateDocumentTitle.apply(this, arguments);
-		
-		if (this.titlebar != null && this.titlebar.firstChild != null)
-		{
-			this.titlebar.firstChild.innerHTML = mxUtils.htmlEntities(document.title);
-		}
-	};
 	/**
 	 * Copies the given cells and XML to the clipboard as an embedded image.
 	 */
@@ -2125,8 +2004,8 @@ mxStencilRegistry.allowEval = false;
 				}
 				else 
 				{
-					editorUi.exportImage(s, false, true,
-						false, false, b, true, false, 'jpeg');
+					editorUi.exportImage(s, false, true, false,
+						false, b, true, false, 'jpeg');
 				}
 			}
 			else 
@@ -2212,6 +2091,11 @@ mxStencilRegistry.allowEval = false;
 				          { name: 'XML Documents', extensions: ['xml'] }
 				       ];
 				break;
+				case 'txt':
+					filters = [
+				          { name: 'Plain Text', extensions: ['txt'] }
+				       ];
+				break;
 			};
 			
 			dlgConfig['filters'] = filters;
@@ -2238,10 +2122,10 @@ mxStencilRegistry.allowEval = false;
 					}, mxUtils.bind(this, function ()
 				    {
 						this.spinner.stop();
-		        	}), mxUtils.bind(this, function ()
+		        	}), mxUtils.bind(this, function (e)
 				    {
 						this.spinner.stop();
-						this.handleError({message: mxResources.get('errorSavingFile')});
+						this.handleError(e, mxResources.get('errorSavingFile'));
 		        	}));
 				}
 			}
@@ -2256,6 +2140,7 @@ mxStencilRegistry.allowEval = false;
 		{
 			var library = new DesktopLibrary(this, data, fileEntry);
 			this.loadLibrary(library);
+			this.showSidebar();
 			success(library);
 		}), error, libPath);
 	};
